@@ -1,0 +1,46 @@
+# STRICT PRIVACY SHIELD: Never send secrets or financial records to Tier 4 Free Gemini API
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets/
+private/
+client-data/
+bank-statements/
+invoices-real/
+backups/
+*.db
+*.sqlite
+*.sqlite3
+
+# Local Visual QA screenshots (never burn Free API TPM on binaries)
+qa-screenshots/
+
+# Token-per-minute (429) protection (block giant generated/lock files)
+node_modules/
+.venv/
+venv/
+dist/
+build/
+.git/
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+*.min.js
+*.min.css
+*.map
+
+# Binary and media files
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.gif
+*.mp4
+*.pdf
+*.xlsx
+*.xls
+*.csv
+*.zip

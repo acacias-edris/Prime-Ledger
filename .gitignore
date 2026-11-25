@@ -1,0 +1,48 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# Financial & private user data (NEVER commit real books or statements)
+client-data/
+bank-statements/
+invoices-real/
+backups/
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
+
+# Local Multimodal Visual QA screenshots (upload directly to chat, never commit)
+qa-screenshots/
+
+# Dependencies (Node / Python)
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Build outputs and caches
+dist/
+build/
+.vite/
+.cache/
+coverage/
+.pytest_cache/
+
+# Logs and local debug dumps
+*.log
+npm-debug.log*
+ERROR_LOG.md
+
+# OS and editor noise
+.DS_Store
+Thumbs.db
+.vscode/settings.json
+*.swp
