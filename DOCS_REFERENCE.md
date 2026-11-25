@@ -1724,4 +1724,512 @@ async def upload_and_reconcile_csv(
     }
 
 Use code with caution.
+---
+
+## Part 4: Statutory Tax & Compliance Specs
+
+*Reference Baseline: Late 2026 (FY 2026–27 India / Tax Year 2026 Global)*
+
+---
+
+### 4.1 India GSTN Offline & API JSON Structures
+
+#### A. GSTR-1 Offline JSON Export Structure (Schema v3.2.x+)
+
+GSTR-1 payloads exported for the [GSTN Returns Offline Tool](https://gst.gov.in "GSTN GSTR 1 User Guide") or direct GSP upload follow a strict root schema. Note two major structural mandates active in 2026:
+
+1. **B2CL Threshold Revision:** Inter-state invoices to unregistered buyers (`b2cl`) apply to invoice values exceeding **₹1,00,000** (reduced from the legacy ₹2,50,000 limit).
+2. **Table 12 HSN Bifurcation:** Effective from the April 2025 return periods onwards, HSN summaries (`hsn`) are strictly split into **`hsn_b2b`** (Table 12A) and **`hsn_b2c`** (Table 12B) arrays instead of a single `data` array, with mandatory 4-digit or 6-digit HSN codes validated against the GST portal master.
+
+```json
+{
+  "gstin": "09AABCU9603R1ZM",
+  "fp": "102026",
+  "version": "GST3.2.4",
+  "hash": "hash",
+  "b2b": [
+    {
+      "ctin": "27AADCB2230M1ZT",
+      "inv": [
+        {
+          "inum": "INV/26-27/0042",
+          "idt": "14-10-2026",
+          "val": 118000.00,
+          "pos": "27",
+          "rchrg": "N",
+          "inv_typ": "R",
+          "itms": [
+            {
+              "num": 1801,
+              "itm_det": {
+                "txval": 100000.00,
+                "rt": 18,
+                "iamt": 18000.00,
+                "csamt": 0.00
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "b2cl": [
+    {
+      "pos": "29",
+      "inv": [
+        {
+          "inum": "INV/26-27/0089",
+          "idt": "18-10-2026",
+          "val": 141600.00,
+          "itms": [
+            {
+              "num": 1801,
+              "itm_det": {
+                "txval": 120000.00,
+                "rt": 18,
+                "iamt": 21600.00,
+                "csamt": 0.00
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "b2cs": [
+    {
+      "sply_ty": "INTRA",
+      "pos": "09",
+      "typ": "OE",
+      "txval": 50000.00,
+      "rt": 18,
+      "camt": 4500.00,
+      "samt": 4500.00,
+      "csamt": 0.00
+    }
+  ],
+  "cdnr": [
+    {
+      "ctin": "27AADCB2230M1ZT",
+      "nt": [
+        {
+          "ntty": "C",
+          "nt_num": "CN/26-27/0004",
+          "nt_dt": "22-10-2026",
+          "p_gst": "N",
+          "pos": "27",
+          "rchrg": "N",
+          "inv_typ": "R",
+          "val": 11800.00,
+          "itms": [
+            {
+              "num": 1801,
+              "itm_det": {
+                "txval": 10000.00,
+                "rt": 18,
+                "iamt": 1800.00,
+                "csamt": 0.00
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "hsn": {
+    "hsn_b2b": [
+      {
+        "num": 1,
+        "hsn_sc": "84713010",
+        "desc": "PORTABLE AUTOMATIC DATA PROCESSING MACHINES",
+        "uqc": "NOS",
+        "qty": 10,
+        "txval": 90000.00,
+        "iamt": 16200.00,
+        "camt": 0.00,
+        "samt": 0.00,
+        "csamt": 0.00,
+        "rt": 18
+      }
+    ],
+    "hsn_b2c": [
+      {
+        "num": 1,
+        "hsn_sc": "998314",
+        "desc": "IT DESIGN AND DEVELOPMENT SERVICES",
+        "uqc": "NA",
+        "qty": 0,
+        "txval": 170000.00,
+        "iamt": 21600.00,
+        "camt": 4500.00,
+        "samt": 4500.00,
+        "csamt": 0.00,
+        "rt": 18
+      }
+    ]
+  },
+  "doc_issue": {
+    "doc_det": [
+      {
+        "doc_num": 1,
+        "doc_typ": "Invoices for outward supply",
+        "docs": [
+          {
+            "num": 1,
+            "from": "INV/26-27/0001",
+            "to": "INV/26-27/0100",
+            "totnum": 100,
+            "cancel": 2,
+            "net_issue": 98
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+| Section Key | GSTR-1 Table | Core Validation Rules |
+| :--- | :--- | :--- |
+| `b2b` | Table 4A, 4B, 6B, 6C | Grouped by `ctin`. `idt` formatted strictly as `DD-MM-YYYY`. Intra-state supplies carry `camt` + `samt` (`camt == samt`); inter-state carry `iamt`. |
+| `b2cl` | Table 5 | Grouped by `pos` (2-digit state code). Mandatory only when `sply_ty == INTER` to unregistered recipients and `val > 100000`. |
+| `b2cs` | Table 7 | Summary aggregated by `(pos, rt, sply_ty, typ)`. Net of B2CS credit/debit notes (can result in negative `txval`). |
+| `cdnr` | Table 9B (Reg.) | `ntty`: `"C"` (Credit Note) or `"D"` (Debit Note). Grouped by `ctin`. |
+| `hsn` | Table 12A / 12B | Split into `hsn_b2b` and `hsn_b2c`. Service SAC codes (`99xxxx`) require `"uqc": "NA"` and `"qty": 0`. |
+| `doc_issue` | Table 13 | Serial range tracking; `net_issue` must strictly equal `totnum - cancel`. |
+
+---
+
+#### B. GSTR-2B JSON Download & IMS (Invoice Management System) Architecture
+
+Under amended **Section 38 of the CGST Act** (notified via Notification No. 16/2025-CT) and the [GSTN IMS Dashboard](https://gst.gov.in "GSTN IMS Dashboard Manual"), GSTR-2B generation is dynamically coupled with recipient actions taken in the **Invoice Management System (IMS)**:
+
+* **IMS Action Enum (`action` / `ims_act`):**
+  * `"A"` (**Accept**): Flows into `itcsumm.itcavl` and `docdata` -> auto-populates GSTR-3B Table 4(A).
+  * `"R"` (**Reject**): Routed to **`itcsumm.itcrej`** and **`docrej`** ("ITC Rejected") -> excluded from GSTR-3B ITC.
+  * `"P"` (**Pending**): Held on the IMS dashboard; omitted completely from the current period's GSTR-2B JSON. *(Note: Since Oct 2025, inward Credit Notes can be kept `P` for a maximum of **1 tax period**, with optional partial ITC reversal declaration where full ITC was never availed).*
+  * `"NAT"` / `"N"` (**No Action Taken**): **Deemed Accepted** when draft GSTR-2B generates on the 14th of `M+1`.
+* **Recomputation Workflow:** Any IMS status mutation (`A`/`R`/`P`) performed after the 14th requires calling the **Regenerate GSTR-2B API** (`GSTR2B GEN 2B`) prior to filing GSTR-3B. Reverse-charge supplies (Table 4B) bypass IMS and flow straight into GSTR-2B/3B.
+
+```json
+{
+  "data": {
+    "gstin": "09AABCU9603R1ZM",
+    "rtnprd": "102026",
+    "version": "2.0",
+    "gendt": "14-11-2026",
+    "itcsumm": {
+      "itcavl": {
+        "nonrevsup": {
+          "iamt": 45000.00,
+          "camt": 12000.00,
+          "samt": 12000.00,
+          "csamt": 0.00,
+          "b2b": {
+            "iamt": 45000.00,
+            "camt": 12000.00,
+            "samt": 12000.00,
+            "csamt": 0.00
+          }
+        },
+        "isdsup": {},
+        "impsup": {}
+      },
+      "itcunavl": {
+        "nonrevsup": {
+          "iamt": 0.00,
+          "camt": 0.00,
+          "samt": 0.00,
+          "csamt": 0.00
+        }
+      },
+      "itcrej": {
+        "nonrevsup": {
+          "iamt": 18000.00,
+          "camt": 0.00,
+          "samt": 0.00,
+          "csamt": 0.00
+        }
+      }
+    },
+    "cpsumm": {
+      "b2b": [
+        {
+          "ctin": "27AADCB2230M1ZT",
+          "trdnm": "ACME INDUSTRIAL SUPPLIES PVT LTD",
+          "supprd": "102026",
+          "supfildt": "10-11-2026",
+          "ttldocs": 1,
+          "txval": 250000.00,
+          "iamt": 45000.00,
+          "camt": 0.00,
+          "samt": 0.00,
+          "csamt": 0.00
+        }
+      ]
+    },
+    "docdata": {
+      "b2b": [
+        {
+          "ctin": "27AADCB2230M1ZT",
+          "trdnm": "ACME INDUSTRIAL SUPPLIES PVT LTD",
+          "supfildt": "10-11-2026",
+          "supprd": "102026",
+          "inv": [
+            {
+              "inum": "SI-9921",
+              "typ": "R",
+              "dt": "05-10-2026",
+              "val": 295000.00,
+              "pos": "09",
+              "rev": "N",
+              "itcavl": "Y",
+              "rsn": "",
+              "ims_act": "A",
+              "srctyp": "E-Invoice",
+              "irn": "a5c9e12f...64_char_sha256_hash",
+              "irngendate": "05-10-2026",
+              "itms": [
+                {
+                  "num": 1,
+                  "rt": 18,
+                  "txval": 250000.00,
+                  "iamt": 45000.00,
+                  "camt": 0.00,
+                  "samt": 0.00,
+                  "csamt": 0.00
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "cdnr": []
+    },
+    "docrej": {
+      "b2b": [
+        {
+          "ctin": "07AAACR5055K1Z7",
+          "trdnm": "DELHI LOGISTICS CORP",
+          "inv": [
+            {
+              "inum": "DL/26/881",
+              "dt": "19-10-2026",
+              "val": 118000.00,
+              "pos": "09",
+              "ims_act": "R",
+              "txval": 100000.00,
+              "iamt": 18000.00
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
+```
+
+---
+
+### 4.2 India GSTR-3B ITC Utilization & NIC E-Invoice Specs
+
+#### A. GSTR-3B Statutory ITC Set-Off Algorithm (Sections 49A, 49B & Rule 88A)
+
+Software computing GSTR-3B offset matrices (`pditc` in GSTR-3B JSON) must enforce [CBIC Rule 88A](https://cbic.gov.in "CBIC CGST Rule 88A") alongside GSTN's February 2026 portal flexibility update:
+
+| Step | Credit Pool (Input) | Target Liability (Output) | Statutory Constraint / Optimization Rule |
+| :--- | :--- | :--- | :--- |
+| **1** | **IGST ITC** | `1. IGST Liability` | **Mandatory First.** Must offset IGST output liability before touching any other head. |
+| **2** | **IGST ITC (Balance)** | `2. CGST` & `SGST/UTGST` | **Any Order & Any Proportion.** Remaining IGST ITC may be split freely across CGST and SGST/UTGST liabilities to equalize remaining cash/credit balances. **Gate:** Total `IGST_ITC` **must equal `0.00`** before Step 3 or Step 4 can execute (Sec 49A/49B). |
+| **3** | **CGST ITC** | `1. CGST` -> `2. IGST` | Offset CGST liability first. Surplus CGST ITC can offset remaining IGST liability. **Cross-utilization against SGST/UTGST is strictly prohibited.** |
+| **4** | **SGST / UTGST ITC** | `1. SGST` -> `2. IGST` | Offset SGST/UTGST liability first. Surplus SGST ITC can offset remaining IGST liability. *(Per Jan/Feb 2026 GSTN portal update, taxpayers can apply CGST and SGST ITC towards remaining IGST liability in any sequence once IGST ITC is exhausted).* **Cross-utilization against CGST is strictly prohibited.** |
+| **5** | **Cess ITC** | `Cess Liability Only` | Isolated pool; cannot cross-utilize with IGST/CGST/SGST. |
+
+> **Note on Rule 86B:** Where taxable supply value (excluding exempt/zero-rated) exceeds **₹50 Lakh/month** and exceptions do not apply, maximum ITC utilization is capped at **99%** of output tax liability (**1%** mandatory Electronic Cash Ledger payment).
+
+```python
+def allocate_itc_rule_88a(liab: dict, itc: dict, cgst_split_ratio: float = None) -> dict:
+    """
+    Deterministic Rule 88A allocator. Optimizes Step 2 IGST remainder to preserve
+    balanced CGST/SGST credit pools unless an explicit ratio is passed.
+    """
+    rem_l = liab.copy()  # {'igst': float, 'cgst': float, 'sgst': float}
+    rem_i = itc.copy()   # {'igst': float, 'cgst': float, 'sgst': float}
+    used = {k: {'igst': 0.0, 'cgst': 0.0, 'sgst': 0.0} for k in ('igst', 'cgst', 'sgst')}
+
+    # Step 1: IGST ITC -> IGST Liability
+    u = min(rem_i['igst'], rem_l['igst'])
+    used['igst']['igst'] += u
+    rem_i['igst'] -= u
+    rem_l['igst'] -= u
+
+    # Step 2: Exhaust remaining IGST ITC across CGST / SGST (optimal working-capital split)
+    if rem_i['igst'] > 0:
+        net_cgst_gap = max(0.0, rem_l['cgst'] - rem_i['cgst'])
+        u_c = min(
+            rem_i['igst'],
+            rem_l['cgst'],
+            net_cgst_gap if cgst_split_ratio is None else rem_i['igst'] * cgst_split_ratio,
+        )
+        used['igst']['cgst'] += u_c
+        rem_i['igst'] -= u_c
+        rem_l['cgst'] -= u_c
+
+        u_s = min(rem_i['igst'], rem_l['sgst'])
+        used['igst']['sgst'] += u_s
+        rem_i['igst'] -= u_s
+        rem_l['sgst'] -= u_s
+
+        # Sweep any residual IGST ITC into remaining CGST liability
+        if rem_i['igst'] > 0 and rem_l['cgst'] > 0:
+            u_c2 = min(rem_i['igst'], rem_l['cgst'])
+            used['igst']['cgst'] += u_c2
+            rem_i['igst'] -= u_c2
+            rem_l['cgst'] -= u_c2
+
+    # Gate check: CGST/SGST ITC unlocked only if IGST ITC == 0 OR all liabilities met
+    # Step 3: CGST ITC -> CGST Liability, then IGST Liability
+    u = min(rem_i['cgst'], rem_l['cgst'])
+    used['cgst']['cgst'] += u
+    rem_i['cgst'] -= u
+    rem_l['cgst'] -= u
+    if rem_l['igst'] > 0:
+        u = min(rem_i['cgst'], rem_l['igst'])
+        used['cgst']['igst'] += u
+        rem_i['cgst'] -= u
+        rem_l['igst'] -= u
+
+    # Step 4: SGST ITC -> SGST Liability, then IGST Liability
+    u = min(rem_i['sgst'], rem_l['sgst'])
+    used['sgst']['sgst'] += u
+    rem_i['sgst'] -= u
+    rem_l['sgst'] -= u
+    if rem_l['igst'] > 0:
+        u = min(rem_i['sgst'], rem_l['igst'])
+        used['sgst']['igst'] += u
+        rem_i['sgst'] -= u
+        rem_l['igst'] -= u
+
+    return {"itc_utilized": used, "cash_payable": rem_l, "closing_itc": rem_i}
+```
+
+---
+
+#### B. NIC E-Invoice JSON Schema (INV-01 Version 1.1)
+
+Mandated via the NIC E-Invoice Portal for taxpayers with aggregate PAN-India turnover **> ₹5 Crore**:
+
+* **Schema Version:** `"Version": "1.1"` (`INV-01` standard: 132 total attributes, ~28–30 conditionally/strictly mandatory).
+* **Reporting Time Limit (2025–2026 Mandate):** Taxpayers with AATO **≥ ₹10 Crore** must report B2B invoices/notes to the IRP within **30 days** of `DocDtls.Dt` (7 days where notified for ₹100 Cr+ segments; IRP rejects backdated uploads outside the window).
+* **Ship-To Validation Tightening (June 2026):** Where `ShipDtls` is populated for multi-location/bill-to-ship-to supplies, `ShipDtls.Gstin`, `TrdNm`, `Addr1`, `Loc`, `Pin`, and `Stcd` are strictly validated against active GSTIN state/PIN combinations.
+
+| Object Block | Mandatory JSON Keys (`Version: "1.1"`) | Constraints & Enumerations |
+| :--- | :--- | :--- |
+| **Root** | `Version` | Must be string `"1.1"`. (`Irn` is omitted in request; returned as 64-char SHA-256 hash + signed JWT `SignedQRCode` in IRP response). |
+| **`TranDtls`** | `TaxSch`, `SupTyp` | `TaxSch`: `"GST"`. `SupTyp`: `"B2B"`, `"SEZWP"`, `"SEZWOP"`, `"EXPWP"`, `"EXPWOP"`, `"DEXP"`. (`RegRev`: `"Y"`/`"N"`, `IgstOnIntra`: `"Y"`/`"N"`). |
+| **`DocDtls`** | `Typ`, `No`, `Dt` | `Typ`: `"INV"`, `"CRN"`, `"DBN"`. `No`: Max 16 chars, alphanumeric/`/`/`-`, not starting with `0` or `/`. `Dt`: `"DD/MM/YYYY"` (note slash delimiter vs GSTR-1 hyphen). |
+| **`SellerDtls`** | `Gstin`, `LglNm`, `Addr1`, `Loc`, `Pin`, `Stcd` | `Gstin`: 15-char supplier GSTIN. `Pin`: 6-digit integer matching `Stcd` (2-digit state code string). |
+| **`BuyerDtls`** | `Gstin`, `LglNm`, `Pos`, `Addr1`, `Loc`, `Pin`, `Stcd` | For Exports (`EXPWP`/`EXPWOP`), set `Gstin`: `"URP"`, `Pos`: `"96"`, `Pin`: `999999`, `Stcd`: `"96"`. |
+| **`ItemList[]`** | `SlNo`, `IsServc`, `HsnCd`, `AssAmt`, `GstRt`, `TotItemVal` | `IsServc`: `"Y"`/`"N"`. `HsnCd`: 4/6/8 digits. Plus tax fields (`IgstAmt`, `CgstAmt`, `SgstAmt`). |
+| **`ValDtls`** | `AssVal`, `TotInvVal` | Plus `CgstVal`, `SgstVal`, `IgstVal`, `CesVal`, `RndOffAmt` (`-0.99` to `0.99`). |
+
+---
+
+### 4.3 India MCA Audit Trail (Edit Log) Technical Requirements
+
+Governed by the Proviso to **Rule 3(1) of the Companies (Accounts) Rules, 2014** (management mandate) and **Rule 11(g) of the Companies (Audit and Auditors) Rules, 2014** (statutory auditor attestation under Section 143(3)(j)), alongside the ICAI Audit Trail Implementation Guide.
+
+#### Mandatory Software Architecture Controls
+
+* **Immutable, Non-Disableable Logging:** The audit trail engine cannot have a toggle, configuration flag, or super-admin privilege capable of pausing, disabling, or purging logs. Any software permitting administrative disabling fails Rule 3(1) compliance automatically.
+* **Transaction Lifecycle Coverage (`INSERT` / `UPDATE` / `DELETE`):** Must capture every creation, modification, cancellation, or deletion affecting "Books of Account" (as defined in Section 2(13): journals, ledgers, sales/purchase registers, cash/bank books, inventory records impacting valuation, and chart-of-account master reclassifications).
+* **Database-Level Integrity vs. Application Bypass:** Statutory auditors under Rule 11(g) inspect both application logs and RDBMS controls. Direct SQL mutations, vendor support scripts, or unlogged API imports must either be blocked via append-only database triggers/permissions or logged into a tamper-evident audit table (e.g., cryptographic hash chaining `prev_hash -> curr_hash`).
+* **Chronological Precision & Back-Dating Separation:** Systems must store two distinct timestamps on every voucher version:
+  * `voucher_effective_date` (accounting period date).
+  * `system_event_timestamp` (immutable UTC/IST server clock timestamp when the action occurred, never user-editable).
+* **Retention & Daily India-Server Backups:**
+  * **8-Year Retention:** Audit logs must be preserved alongside books of account for at least **8 financial years** under Section 128(5).
+  * **Rule 3(5) Daily Backup:** Electronic books of account and edit logs must be backed up on a **daily basis on servers physically located in India** (even if primary cloud hosting is outside India).
+
+#### Reference Audit Log Table Schema (`accounting_audit_log`)
+
+```sql
+CREATE TABLE accounting_audit_log (
+    audit_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL,
+    entity_type VARCHAR(50) NOT NULL,           -- 'JOURNAL_ENTRY', 'INVOICE', 'LEDGER_MASTER'
+    entity_id UUID NOT NULL,                    -- Voucher / Transaction PK
+    voucher_number VARCHAR(64) NOT NULL,
+    version_seq INT NOT NULL,                   -- Monotonically increasing per entity_id (1, 2, 3...)
+    action_type VARCHAR(16) NOT NULL CHECK (action_type IN ('CREATE', 'UPDATE', 'CANCEL', 'DELETE')),
+    actor_user_id UUID NOT NULL,                -- Authenticated user / service principal ID
+    actor_ip INET,
+    effective_date DATE NOT NULL,               -- Accounting date
+    logged_at_utc TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    before_snapshot JSONB,                      -- NULL on CREATE; full state prior to mutation
+    after_snapshot JSONB,                       -- NULL on hard DELETE; full state post mutation
+    field_diffs JSONB NOT NULL,                 -- Array of {field, old_val, new_val}
+    prev_record_hash CHAR(64) NOT NULL,         -- SHA-256 of previous tenant audit record
+    record_hash CHAR(64) NOT NULL               -- SHA-256(prev_record_hash || entity_id || version_seq || logged_at_utc || after_snapshot)
+);
+
+-- Enforce append-only immutability at PostgreSQL engine level
+REVOKE UPDATE, DELETE, TRUNCATE ON accounting_audit_log FROM PUBLIC, app_readwrite_role;
+```
+
+---
+
+### 4.4 Global Tax & Bank Feed Integration Overview
+
+#### A. US Form 1099-NEC (Tax Year 2026 Statutory Overhaul)
+
+Per IRS Publication 1099 (2026) and the One Big Beautiful Bill Act (OBBBA) amendments effective for payments made after December 31, 2025:
+
+* **Reporting & Backup Withholding Threshold:** Increased from **$600** to **$2,000** per calendar year per payee for Form 1099-NEC (and general Form 1099-MISC rents/services; indexed for inflation starting TY 2027). *(Exception: Form 1099-MISC Box 10 gross proceeds paid to an attorney remain at $600, and Box 2 royalties remain at $10).*
+* **Mandatory E-File Intake Cutover (FIRE Retired):** The legacy IRS FIRE system is permanently retired for Tax Year 2026 (Filing Season Jan 2027). All electronic submissions (mandatory for filers with 10+ aggregate information returns) must route exclusively through the **IRS Information Returns Intake System (IRIS)** XML/API schema using an IRIS Transmitter Control Code (TCC). Filing deadline: **January 31**.
+* **2026 Form 1099-NEC Box Schema Updates:**
+  * **Box 1a:** Nonemployee compensation (`>= $2,000.00`, includes attorney legal service fees).
+  * **Box 1b (New for 2026):** Cash tips reported under OBBBA nonemployee provisions.
+  * **Box 1c (New for 2026):** Treasury Tipped Occupation Code (TTOC).
+  * **Box 1d (New for 2026):** Overtime compensation component.
+  * **Box 2:** Payer made direct sales totaling $5,000 or more of consumer products for resale (checkbox boolean).
+  * **Box 3:** Excess golden parachute payments.
+  * **Box 4:** Federal income tax withheld (24% backup withholding; mandatory at any dollar amount if withheld, or triggered at $2,000 if TIN is missing/invalid).
+  * **Boxes 5–7:** State tax withheld, State/Payer's state no., and State income. *(2026 forms also split Street, City, State, and ZIP into discrete structured fields).*
+
+---
+
+#### B. UK Making Tax Digital (MTD) VAT 9-Box API Mapping
+
+Submitted to `POST /organisations/vat/{vrn}/returns` on the HMRC Developer Hub VAT (MTD) API v1.0 (`Accept: application/vnd.hmrc.1.0+json`). All requests require OAuth 2.0 (`write:vat` scope) and mandatory `Gov-Client-*` Fraud Prevention Headers (device ID, timezone, user-agent, IP, MAC/window dimensions).
+
+| Box | HMRC JSON Field | Type & Precision | Statutory Calculation / Rule |
+| :--- | :--- | :--- | :--- |
+| **Meta** | `periodKey` | `string` (4 chars) | Obligation key from `GET /obligations` (e.g., `"26A1"`). |
+| **Box 1** | `vatDueSales` | `decimal(13,2)` | Output VAT due on sales and other outputs (incl. domestic reverse charge output VAT). |
+| **Box 2** | `vatDueAcquisitions` | `decimal(13,2)` | VAT due on acquisitions of goods made in Northern Ireland from EU Member States (`0.00` for GB-only entities). |
+| **Box 3** | `totalVatDue` | `decimal(13,2)` | **Computed:** Must strictly equal `vatDueSales + vatDueAcquisitions`. |
+| **Box 4** | `vatReclaimedCurrPeriod` | `decimal(13,2)` | Input VAT reclaimed on purchases and other inputs (incl. postponed import VAT). |
+| **Box 5** | `netVatDue` | `decimal(11,2)` | **Unsigned Absolute Value:** `abs(totalVatDue - vatReclaimedCurrPeriod)`. Must be `>= 0.00` (`[0 .. 99999999999.99]`); HMRC infers payable vs. refund direction automatically. |
+| **Box 6** | `totalValueSalesExVAT` | `integer` (whole £) | Total net value of sales and all other outputs excluding VAT. |
+| **Box 7** | `totalValuePurchasesExVAT` | `integer` (whole £) | Total net value of purchases and all other inputs excluding VAT. |
+| **Box 8** | `totalValueGoodsSuppliedExVAT` | `integer` (whole £) | Total value of dispatches of goods (and related costs) ex-VAT from NI to EU. |
+| **Box 9** | `totalAcquisitionsExVAT` | `integer` (whole £) | Total value of acquisitions of goods (and related costs) ex-VAT into NI from EU. |
+| **Sign** | `finalised` | `boolean` | Must be `true` (legal declaration that return is complete and accurate). |
+
+---
+
+#### C. Standard Sandbox Bank Feed Adapter Patterns
+
+To unify Indian and international bank reconciliation pipelines behind a single internal `BankFeedAdapter` interface, normalize both providers into an asynchronous webhook-driven state machine:
+
+| Lifecycle Phase | RBI Account Aggregator — Setu AA v2 Docs (ReBIT v2.0.0) | Global Open Banking — Plaid Sandbox Docs |
+| :--- | :--- | :--- |
+| **Base Sandbox URL** | `https://setu.co` | `https://plaid.com` |
+| **Auth Headers** | `x-client-id`, `x-client-secret`, `x-product-instance-id` (or OAuth Bearer token) | `PLAID-CLIENT-ID`, `PLAID-SECRET` |
+| **1. Session / Consent Init** | `POST /consents` with ReBIT `consentTypes` (`["PROFILE", "SUMMARY", "TRANSACTIONS"]`), `fiTypes` (`["DEPOSIT"]`), `fetchType` (`"PERIODIC"`), `dataRange`, and VUA (`9999999999@onemoney`). Returns `id` (`consentId`) + redirect `url`. | `POST /link/token/create` (`products: ["transactions"]`) -> UI Link flow; OR headless CI bypass via `POST /sandbox/public_token/create` (`institution_id: "ins_109508"`, `user_good` / `pass_good`). |
+| **2. Authorization Grant** | User approves in Setu mock webview (OTP `123456`). Setu fires `CONSENT_STATUS_UPDATE` webhook (`status: "ACTIVE"`). | Exchange short-lived `public_token` via `POST /item/public_token/exchange` -> store persistent `access_token` (`access-sandbox-...`) + `item_id`. |
+| **3. Data Fetch Trigger** | `POST /sessions` passing `{ consentId, dataRange: { from, to }, format: "json" }`. Returns `sessionId` (`status: "PENDING"`). Wait for `FI_NOTIFICATION` (`COMPLETED` / `PARTIAL`) webhook. | Cursor-paginated delta pull via `POST /transactions/sync` passing `{ access_token, cursor }`. Loop while `has_more == true` and persist `next_cursor`. |
+| **4. Payload Retrieval & Normalization** | `GET /sessions/{sessionId}` -> parses ReBIT `Account.Transactions.Transaction[]` (`txnId`, `type: CREDIT/DEBIT`, `mode: UPI/NEFT/IMPS`, `amount`, `currentBalance`, `valueDate`, `narration`, `reference`). | Reads `{ added[], modified[], removed[] }`. **Note sign convention:** Plaid positive amount = money out (debit); negative amount = inflow (credit)—invert sign when normalizing to ledger journal entries. |
+| **5. Webhook Simulation** | Configure mock FIP response delays/states via Setu Bridge Sandbox settings (`PARTIAL`, `EXPIRED`, `REVOKED`). | Trigger deterministic webhook events on demand via `POST /sandbox/item/fire_webhook` (`webhook_code: "SYNC_UPDATES_AVAILABLE"` or `"ITEM_LOGIN_REQUIRED"`). |
 
