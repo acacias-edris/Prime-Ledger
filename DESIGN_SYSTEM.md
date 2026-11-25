@@ -1,107 +1,230 @@
 # Design System: LedgerPrime
 
-> **Strict Agent Directive:** Every color, font size, spacing value, radius, shadow, and motion duration in the UI MUST come from the semantic tokens below. Never invent unmapped hex values or override this contract without updating `DESIGN_SYSTEM.md` first.
+> **Strict Agent Directive:** Every color, font size, spacing value, radius, shadow, z-index, and motion duration in the UI MUST come from the semantic tokens below (see §11 `tokens.css`). Never invent unmapped hex values or override this contract without updating `DESIGN_SYSTEM.md` first.
+
+> **Revision v2 changes:** Dr/Cr decoupled from status colors · new `--border-input` (≥3:1) · separate row-state surfaces · spacing/type/z-index tokens · density modes · sticky/scroll contract · new **§8 Numeric Formatting & Accounting Table States** · print & a11y rules.
 
 ## 1. Visual Identity & Aesthetic Direction
 - **Product Personality:** Swiss-precision financial workbench — merges **Tally Prime's zero-latency keyboard efficiency** with **QuickBooks' calm, legible executive clarity**.
-- **Default Theme Mode:** Light Mode default with first-class Dark Mode toggle (for late-night reconciliation sessions).
-- **Reference Vibe:** Crisp hairline `1px` accounting ledger rules, generous breathing room around high-density tabular data, monospaced tabular numerals (`tabular-nums`), and restrained ink-and-emerald semantic cues.
+- **Default Theme Mode:** Light Mode default with first-class Dark Mode toggle. Print/PDF export always renders Light Mode.
+- **Reference Vibe:** Crisp hairline `1px` ledger rules, high-density but breathable tabular data, tabular numerals, restrained ink-and-emerald semantic cues.
 - **Signature Visual Moves (3 Max):**
-  1. **Hairline Ledger Grid:** `1px solid var(--border-subtle)` structural dividers and subtle zebra/hover states instead of heavy drop shadows or cluttered card borders.
-  2. **Monospaced Tabular Figures Everywhere:** Every monetary figure, debit/credit column, GST breakdown, invoice number, and stock quantity renders in `JetBrains Mono` with `font-variant-numeric: tabular-nums;` and strict right-alignment.
-  3. **Tactile Keyboard Shortcut Chips (`<Kbd>`):** Subtle inline keycap badges (`F8`, `F9`, `Alt+G`, `Ctrl+S`) on primary actions so power users can navigate Tally-style without lifting hands off the keyboard.
+  1. **Hairline Ledger Grid:** `1px solid var(--border-subtle)` dividers and row-state fills instead of shadows or heavy card borders. Ledger surfaces are **flat** (no shadow); shadows are reserved for floating layers.
+  2. **Tabular Figures Everywhere:** Every monetary figure, quantity, and rate uses `font-variant-numeric: tabular-nums lining-nums;` and strict right-alignment. Amounts use `--font-num` (Inter tabular); codes/IDs (invoice no., GSTIN, HSN, voucher no.) use `--font-mono`.
+  3. **Tactile Keyboard Shortcut Chips (`<Kbd>`):** Inline keycap badges (`F8`, `F9`, `Alt+G`, `Ctrl+S`) on primary actions.
 
 ## 2. Semantic Color Tokens & Contrast Rules
-Use semantic CSS variables only (zero raw hex values in TSX/CSS components). All body text meets WCAG AA (`>= 4.5:1`); large metrics and UI controls meet `>= 3:1`.
+Semantic CSS variables only (zero raw hex in TSX/CSS). Body text ≥ 4.5:1 (WCAG AA). UI component boundaries that identify a control (inputs, checkboxes, focus rings) ≥ 3:1 (WCAG 1.4.11). Decorative gridlines are exempt.
 
-| Role | CSS Variable | Light Mode | Dark Mode | Strict Usage Rule |
+> **Debit and Credit are NOT statuses.** Dr/Cr are two neutral sides of a double entry and always render in `--text-primary`. Status colors describe *state* (matched, variance, error), never *side*. Never color a whole Dr or Cr column.
+
+| Role | CSS Variable | Light | Dark | Strict Usage Rule |
 | :--- | :--- | :--- | :--- | :--- |
-| Page Canvas | `--bg-canvas` | `#F8FAFC` | `#0B0F14` | Main viewport workspace canvas |
-| Primary Surface | `--bg-surface` | `#FFFFFF` | `#121821` | Ledger tables, cards, modals, drawers, topbar |
-| Subtle Surface | `--bg-muted` | `#F1F5F9` | `#1A222E` | Table headers, sidebar active fill, `<Kbd>` chips, row hover |
-| Primary Text | `--text-primary` | `#0F172A` | `#F1F5F9` | Headings, ledger names, primary monetary figures |
-| Muted Text | `--text-muted` | `#475569` | `#94A3B8` | Column labels, HSN codes, dates, secondary metadata |
-| Hairline Border | `--border-subtle` | `#E2E8F0` | `#243040` | Table gridlines, input borders, card frames |
-| Strong Border | `--border-strong` | `#CBD5E1` | `#334155` | Active voucher totals divider, double-underline accounting totals |
-| Primary Brand CTA | `--accent-primary` | `#0F4C81` | `#38BDF8` | Primary buttons ("Post Voucher", "New Invoice"), active nav bar ONLY |
-| On Primary CTA | `--accent-foreground` | `#FFFFFF` | `#082F49` | Text/icons rendered on `--accent-primary` |
-| Focus Ring | `--ring-focus` | `#1D4ED8` | `#7DD3FC` | Keyboard `:focus-visible` outline (`2px` offset) |
-| Accounting Credit / Matched | `--status-success` | `#15803D` | `#4ADE80` | Reconciled bank lines, ITC matched, positive cash flow, Dr=Cr balanced |
-| Pending / Variance | `--status-warning` | `#B45309` | `#FBBF24` | Uncleared cheques, GSTR-2B value mismatch, approaching TDS threshold |
-| Accounting Debit Alert / Error | `--status-danger` | `#B91C1C` | `#F87171` | Unbalanced voucher (`Dr != Cr`), overdue bills, missing in GSTR-2B |
+| Page Canvas | `--bg-canvas` | `#F8FAFC` | `#0B0F14` | Workspace canvas |
+| Primary Surface | `--bg-surface` | `#FFFFFF` | `#121821` | Tables, cards, modals, drawers, topbar |
+| Subtle Surface | `--bg-muted` | `#F1F5F9` | `#1A222E` | `<Kbd>` chips, sidebar active fill, secondary hover |
+| Table Header | `--bg-table-header` | `#F1F5F9` | `#18202B` | Sticky table header only |
+| Zebra Stripe | `--bg-row-stripe` | `#FAFBFC` | `#151C26` | Optional alternate rows (off by default) |
+| Row Hover | `--bg-row-hover` | `#EEF2F7` | `#1E2836` | Pointer hover on a row |
+| Row Selected / Cursor | `--bg-row-selected` | `#E6EEF7` | `#16304A` | Keyboard cursor row & selected rows (+ `2px` inset left bar `--accent-primary`) |
+| Group / Subtotal Row | `--bg-row-group` | `#F6F8FA` | `#161D27` | Ledger group headers and subtotal rows |
+| Primary Text | `--text-primary` | `#0F172A` | `#F1F5F9` | Headings, ledger names, all monetary figures incl. Dr & Cr |
+| Muted Text | `--text-muted` | `#475569` | `#94A3B8` | Column labels, dates, metadata |
+| Disabled / Nil Text | `--text-disabled` | `#64748B` | `#7C8AA0` | Nil/N-A markers, disabled controls (still ≥ 4.5:1 on surface) |
+| Hairline Border | `--border-subtle` | `#E2E8F0` | `#243040` | **Decorative only:** table gridlines, card frames |
+| Input Border | `--border-input` | `#64748B` | `#64748B` | Inputs, comboboxes, checkboxes (≈4.7:1 light / ≈3.6:1 dark) |
+| Strong Border | `--border-strong` | `#94A3B8` | `#475569` | Subtotal & grand-total rules, floating layer frames |
+| Primary Brand CTA | `--accent-primary` | `#0F4C81` | `#5AB0E8` | Primary buttons, active nav bar ONLY |
+| On Primary CTA | `--accent-foreground` | `#FFFFFF` | `#06243A` | Text/icons on `--accent-primary` |
+| Focus Ring | `--ring-focus` | `#1D4ED8` | `#7DD3FC` | `:focus-visible` outline, `2px` width, `2px` offset |
+| Matched / Balanced | `--status-success` | `#15803D` | `#4ADE80` | Reconciled lines, ITC matched, Dr = Cr balanced pill |
+| Pending / Variance | `--status-warning` | `#B45309` | `#FBBF24` | Uncleared cheques, GSTR-2B value mismatch, TDS threshold |
+| Error / Overdue | `--status-danger` | `#B91C1C` | `#F87171` | Unbalanced voucher, overdue bills, missing in GSTR-2B |
+| Status Tint BGs | `--status-*-bg` | see §11 | see §11 | Pill/alert backgrounds only, always paired with the status foreground |
+
+**Color is never the sole signal.** Every status pill/cell carries an icon (`CheckCircle2`, `Clock`, `AlertTriangle`, `XCircle`) and/or text label.
 
 ## 3. Typography Scale & Hierarchy
-- **Display / Heading Font:** `'Plus Jakarta Sans', 'Inter', system-ui, sans-serif`
-- **Body UI Font:** `'Inter', system-ui, sans-serif`
-- **Monospace / Numeric Font:** `'JetBrains Mono', ui-monospace, SFMono-Regular, monospace` (`font-variant-numeric: tabular-nums;`)
+- **UI / Display Font:** `'Inter', system-ui, sans-serif` (single family; headings differentiated by weight & tracking — no second display font to load).
+- **Numeric Font:** `--font-num: 'Inter', system-ui, sans-serif` + `font-variant-numeric: tabular-nums lining-nums slashed-zero;` (compact, aligned, readable at density).
+- **Mono Font:** `'JetBrains Mono', ui-monospace, SFMono-Regular, monospace` — IDs, GSTIN/HSN, voucher numbers, `<Kbd>`, KPI hero figure optional.
 
-| Role | Desktop Size | Mobile Size (`390px`) | Weight | Line Height | Tracking | Usage |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| KPI Hero Figure | `32px` (`2rem`) | `26px` (`1.625rem`) | `700` | `1.15` | `-0.025em` | Top cash balance / net profit KPIs (Mono tabular) |
-| H1 Page Title | `24px` (`1.5rem`) | `20px` (`1.25rem`) | `600` | `1.25` | `-0.02em` | Workspace header (e.g., "Financial Command", "Day Book") |
-| H2 Section | `18px` (`1.125rem`) | `17px` (`1.0625rem`) | `600` | `1.3` | `-0.015em` | Panel titles, drawer headers |
-| H3 Card Title | `15px` (`0.9375rem`) | `15px` (`0.9375rem`) | `600` | `1.35` | `-0.01em` | KPI card labels, sub-ledger section headers |
-| Body / Table Cell | `14px` (`0.875rem`) | `14px` (`0.875rem`) | `400` | `1.5` | `0em` | Standard text & ledger rows (dense yet scannable) |
-| Small / Meta | `12.5px` (`0.78rem`) | `13px` (`0.8125rem`) | `500` | `1.4` | `0em` | Narration hints, timestamps, GSTIN/HSN metadata |
-| Eyebrow / `<Kbd>` | `11px` (`0.6875rem`) | `11px` (`0.6875rem`) | `600` | `1.2` | `+0.05em` | Table headers (uppercase), status pills, shortcut chips |
+| Role | Token | Desktop | Mobile (`390px`) | Weight | Line Height | Tracking | Usage |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| KPI Hero Figure | `--fs-kpi` | `32px` | `26px` | `700` | `1.15` | `-0.025em` | Top KPIs (tabular) |
+| H1 Page Title | `--fs-h1` | `24px` | `20px` | `600` | `1.25` | `-0.02em` | Workspace header |
+| H2 Section | `--fs-h2` | `18px` | `17px` | `600` | `1.3` | `-0.015em` | Panel/drawer titles |
+| H3 Card Title | `--fs-h3` | `15px` | `15px` | `600` | `1.35` | `-0.01em` | Card labels, sub-ledger headers |
+| Body / Table Cell | `--fs-body` | `14px` | `14px` | `400` | `1.5` | `0` | Ledger rows |
+| Small / Meta | `--fs-sm` | `13px` | `13px` | `500` | `1.4` | `0` | Narration, timestamps, GSTIN |
+| Table Header | `--fs-th` | `12px` | `12px` | `600` | `1.2` | `+0.03em` | Uppercase column headers |
+| Eyebrow / `<Kbd>` | `--fs-xs` | `11px` | `11px` | `600` | `1.2` | `+0.05em` | Status pills, shortcut chips (never body content) |
 
 ## 4. Spacing, Grid & Responsive Layout Rhythm
-- **Base Unit:** `4px` scale (`4, 8, 12, 16, 20, 24, 32, 40, 48px`).
-- **App Shell Layout:** Fixed collapsible Left Sidebar (`240px` desktop, slide-over drawer on `390px` mobile) + Sticky Top Bar (`56px` height containing Company/FY Selector, `Alt+G` Command Search Trigger, Theme Toggle, and Primary "New Voucher" CTA).
-- **Max Content Width:** `1360px` centered inside workspace with `24px` desktop / `16px` mobile horizontal padding.
-- **Responsive Breakpoints:** Mobile `390px` (single column KPI stack, horizontally scrollable wrapper for multi-column financial tables — zero page-level horizontal overflow), Tablet `768px` (2-column KPIs), Desktop `1280px–1440px` (4-column KPI strip + 12-column analytical split).
-- **Touch Target Minimum:** All buttons, voucher tabs, and inputs `>= 38px` tall on desktop and `>= 44px` tall on mobile.
+- **Base Unit:** `4px`. Tokens `--space-1 … --space-12` = `4, 8, 12, 16, 20, 24, 32, 40, 48px`. No off-scale values.
+- **App Shell:** Collapsible Left Sidebar (`240px` desktop, slide-over drawer on mobile) + Sticky Top Bar (`56px`: Company/FY selector, `Alt+G` search, theme toggle, "New Voucher" CTA).
+- **Max Content Width:** `1360px`, `24px` desktop / `16px` mobile padding.
+- **Breakpoints:** Mobile `390px` (single-column KPIs), Tablet `768px` (2-col KPIs), Desktop `1280–1440px` (4-col KPI strip + 12-col split).
+- **Control Heights:** Fixed via `--control-h`: `40px` desktop / `44px` mobile for buttons, inputs, comboboxes and voucher tabs (heights are set explicitly, not derived from padding).
+- **Z-Index Scale:** `--z-sticky: 10` (table header/first column), `--z-topbar: 20`, `--z-drawer: 40`, `--z-modal: 50`, `--z-palette: 60`, `--z-toast: 70`.
 
 ## 5. Shape, Borders & Elevation
-- **Radius Menu (Use ONLY These):**
-  - `--radius-sm`: `6px` (inputs, `<Kbd>` chips, compact table actions, status pills)
-  - `--radius-md`: `8px` (cards, dropdowns, primary buttons, alerts)
-  - `--radius-lg`: `12px` (modals, voucher entry drawers, command palette)
-  - `--radius-full`: `9999px` (company avatars, live status dots)
-- **Elevation Hierarchy:**
-  - Level 0 (Canvas): `--bg-canvas`
-  - Level 1 (Ledger Surface / Card): `--bg-surface` + `1px solid var(--border-subtle)` + `--shadow-sm`
-  - Level 2 (Command Palette / Voucher Drawer): `--bg-surface` + `1px solid var(--border-strong)` + `--shadow-md`
+- **Radius Menu (ONLY these):** `--radius-sm 6px` (inputs, `<Kbd>`, pills) · `--radius-md 8px` (cards, buttons, dropdowns, alerts) · `--radius-lg 12px` (modals, drawers, palette) · `--radius-full` (avatars, status dots).
+- **Elevation:**
+  - Level 0 — Canvas: `--bg-canvas`
+  - Level 1 — Ledger Surface / Card: `--bg-surface` + `1px solid var(--border-subtle)`, **no shadow**
+  - Level 2 — Dropdown / Popover: `--bg-surface` + `1px solid var(--border-strong)` + `--shadow-sm`
+  - Level 3 — Drawer / Modal / Command Palette: `--bg-surface` + `1px solid var(--border-strong)` + `--shadow-md`
 
 ## 6. Motion & Interactive States
-- **Durations:** `--dur-fast: 120ms` (keyboard focus/hover/row highlight — Tally-snappy), `--dur-base: 200ms` (drawer/modal transitions), `--dur-slow: 280ms` (mobile nav drawer).
+- **Durations:** `--dur-fast 120ms` (hover, focus, row highlight) · `--dur-base 200ms` (drawer/modal) · `--dur-slow 280ms` (mobile nav).
 - **Easing:** `--ease-out: cubic-bezier(0.16, 1, 0.3, 1)`.
-- **Reduced Motion:** Respect `@media (prefers-reduced-motion: reduce)`.
-- **Mandatory Component States:** Every interactive control MUST implement `default`, `hover`, `focus-visible` (high-visibility keyboard ring for Tally-style tabbing), `active`, `disabled`, `loading` (skeleton rows), and `empty/error` states.
+- **Reduced Motion:** Under `prefers-reduced-motion: reduce`, drawers/modals switch to a `≤ 80ms` opacity fade (no translate), skeleton shimmer becomes static, number count-up animations are disabled.
+- **Never animate monetary values** (no count-up on balances or totals outside of decorative onboarding).
+- **Mandatory States:** `default`, `hover`, `focus-visible`, `active`, `disabled`, `loading` (skeleton rows matching column widths), `empty`, `error`.
 
-## 7. Core Component Recipes (Visual North Star Primitives)
-- **Primary Button:** `--accent-primary` fill, `--accent-foreground` text, `--radius-md`, `8px 14px` padding, `500` weight, optional trailing `<Kbd>` chip.
-- **Secondary / Ghost Button:** `--bg-surface` + `1px solid var(--border-subtle)` -> `--bg-muted` on hover.
-- **Financial KPI Card:** `--bg-surface`, `1px solid var(--border-subtle)`, `--radius-md`, `18px 20px` padding; strict 3-line stack: Eyebrow label (`--text-muted`) -> Mono tabular Hero Figure (`--text-primary`) -> Period delta / reconciliation badge.
-- **Accounting Data Table:** Sticky `--bg-muted` header (`11px` uppercase tracked), `44px` comfortable row height, `1px solid var(--border-subtle)` horizontal rules, text columns left-aligned, ALL numeric/currency columns strictly right-aligned in `JetBrains Mono` with `tabular-nums`, bold bottom summary row with `2px solid var(--border-strong)` top border.
-- **Form Input & Ledger Combobox:** `40px` desktop / `44px` mobile height, explicit `<label>` above input, `--status-danger` border + inline accounting validation message on error (e.g., `"Debit and Credit must balance: difference ₹1,250.00"`).
-- **Voucher Entry Drawer / Modal:** Slide-over panel (`560px–720px` desktop, full-screen sheet on `390px` mobile) with sticky header (Voucher Type badge + `F4–F9` quick switcher) and sticky footer displaying live `Total Debit`, `Total Credit`, Balance Pill (`Balanced` green / `Out of Balance` red), and `Save Voucher (Ctrl+Enter)`.
+## 7. Core Component Recipes
+- **Primary Button:** `--accent-primary` fill, `--accent-foreground` text, `--radius-md`, height `--control-h`, `0 var(--space-4)` padding, `500` weight, optional trailing `<Kbd>`.
+- **Secondary / Ghost Button:** `--bg-surface` + `1px solid var(--border-input)` → `--bg-muted` on hover.
+- **Financial KPI Card:** `--bg-surface`, `1px solid var(--border-subtle)`, `--radius-md`, `var(--space-5)` padding; 3-line stack: eyebrow (`--text-muted`) → tabular hero figure (`--text-primary`) → period delta (icon + sign + text, e.g. `▲ 4.2% vs Oct`) or reconciliation badge.
+- **Form Input & Ledger Combobox:** height `--control-h`, `1px solid var(--border-input)`, explicit `<label>` above, numeric inputs right-aligned; error = `--status-danger` border + icon + inline message (`"Debit and Credit must balance: difference ₹1,250.00"`) linked via `aria-describedby`.
+- **Voucher Entry Drawer / Modal:** `560–720px` slide-over desktop, full-screen sheet mobile. Sticky header (voucher type badge + `F4–F9` switcher). Sticky footer: `Total Dr`, `Total Cr`, `Difference`, Balance Pill (`✓ Balanced` success / `✕ Out of balance ₹X` danger), `Save Voucher (Ctrl+Enter)` — Save disabled while unbalanced, with a tooltip stating why.
+- **Accounting Data Table:** see §8 for the full contract.
 
-## 8. Iconography & Data Realism
-- **Icon Library:** `lucide-react` exclusively (`1.75px` stroke width; `16px` inline, `18px` sidebar/nav).
-- **Zero Lorem Ipsum:** Populate all previews with realistic Indian + Global dummy data (e.g., *Bharat Hardware & Exports Pvt. Ltd.*, FY 2026–27, invoices `INV/26-27/0042`, HDFC Bank Current A/c, CGST/SGST 9%+9%, IGST 18%, stock item *Copper Wire Coil 2.5mm*).
+## 8. Numeric Formatting & Accounting Table States
 
-## 9. Strict Do / Don't Guardrails (Anti-AI-Slop Rules)
-- **DO** align every currency symbol and decimal point vertically in ledger columns using `tabular-nums`.
-- **DO** make the Company Name, Active Financial Year, and `Alt+G` Go-To Command Palette unmistakable at a glance.
-- **DO** keep keyboard focus outlines crisp and immediately visible when tabbing through voucher lines.
-- **DON'T** use neon purple-to-cyan gradients, decorative glowing orbs, dark glassmorphism, or rainbow icon circles on KPI cards.
-- **DON'T** center-align currency columns or mix Indian (`₹12,45,000.00`) and US (`$124,500.00`) formatting inside the same company without explicit currency ISO codes (`INR` / `USD`).
-- **DON'T** let any table cause full-page horizontal scroll on `390px` mobile (always wrap tables inside `overflow-x-auto` containers).
+### 8.1 Table Anatomy & Density
+- **Density modes** (user toggle, persisted): `compact` = `32px` rows / `13px` cells (Tally mode); `comfortable` = `40px` rows / `14px` cells (default). Mobile always `44px`.
+- Header: sticky, `--bg-table-header`, `--fs-th` uppercase, sort icon (`ArrowUp`/`ArrowDown`/`ArrowUpDown`) with `aria-sort`.
+- Rules: `1px solid var(--border-subtle)` horizontal only; no vertical rules except between Dr | Cr column pairs.
+- Alignment: text left; all amounts, quantities, rates, % right-aligned; dates left; status centered.
+- Numeric cell padding: `var(--space-3)` right, plus a fixed `2ch` sign/suffix gutter so `(…)` and `Dr/Cr` suffixes don't break decimal alignment.
 
-## 10. Starter `frontend/src/styles/tokens.css` Block
+### 8.2 Scroll & Sticky Contract
+- The table lives in **one** scroll container (`.table-scroll { overflow: auto; max-height: … }`) that owns **both** axes. The sticky header and sticky first column (ledger/party name) are relative to this container — never place `position: sticky` headers inside a container that scrolls only on X while the page scrolls Y.
+- Sticky first column gets a right-edge shadow (`--shadow-sticky-col`) only while horizontally scrolled.
+- Page never scrolls horizontally at `390px`.
+
+### 8.3 Negative Values & Dr/Cr Presentation
+- **Ledger / Trial Balance / Books:** Separate `Debit` and `Credit` columns, both neutral `--text-primary`. A single-balance column uses Tally suffix: `12,450.00 Dr` / `8,300.00 Cr` (suffix in `--text-muted`, `--fs-sm`).
+- **Reports (P&L, cash flow, variance):** Negatives in parentheses `(1,250.00)`. Never color-only; red is permitted only when the negative represents an **error/adverse variance** state, and then with an icon.
+- Never use a bare hyphen; if a minus sign is required (exports, inputs) use `−` (U+2212).
+- **Abbreviation rule:** `Cr` ALWAYS means Credit in tables. Crore is written in full (`₹4.2 crore`) and only in KPI/summary copy, never in ledger cells. Lakh likewise (`₹12.5 lakh`).
+
+### 8.4 Zero, Nil & Not Applicable
+| Case | Render | Style |
+| :--- | :--- | :--- |
+| Calculated zero | `0.00` | `--text-primary` |
+| No transaction in period | `—` (em dash) | `--text-disabled`, `aria-label="nil"` |
+| Not applicable (e.g. IGST on intrastate) | `N/A` | `--text-disabled`, `--fs-sm` |
+| Value pending / loading | skeleton bar | never `0.00` placeholder |
+| Data unavailable / error | `⚠ —` | `--status-warning`, tooltip with reason |
+
+### 8.5 Precision & Units
+- Amounts: 2 dp. Quantities: per stock unit's configured precision (e.g. `Nos` 0 dp, `kg` 3 dp, `m` 2 dp). FX rates: 4 dp. Percentages: 2 dp with `%`. Tax rates: as configured (`9%`, `18%`, `0.1%`).
+- Units render in a dedicated `Unit` column or as a muted suffix (`25.000 kg`) — never mixed silently.
+- Never truncate a number. Columns set `min-width` based on the widest expected value (`₹1,00,00,00,000.00` = 17 tabular characters); if it still overflows, the column widens and the table scrolls.
+
+### 8.6 Totals, Subtotals & Running Balances
+| Row Type | Style |
+| :--- | :--- |
+| Group header (Tally Group → Sub-group → Ledger) | `--bg-row-group`, `600` weight, chevron expand/collapse (`ChevronRight` rotates), indent `var(--space-4)` per level (max 4 levels; deeper uses breadcrumb) |
+| Subtotal | `600` weight, `1px solid var(--border-strong)` top rule on numeric cells only |
+| Grand total | `700` weight, `1px solid var(--border-strong)` top rule + **double underline** (`border-bottom: 3px double var(--border-strong)`) on numeric cells |
+| Opening balance | First row, italic label "Opening Balance", amount with Dr/Cr suffix |
+| Closing balance | Final row above grand total, `600` weight |
+| Brought / Carried forward | `b/f` and `c/f` rows on paginated or printed views, `--text-muted` labels |
+| Running balance column | Right-most, Dr/Cr suffix, recalculated on sort only when sorted by date (otherwise column hidden with note "Sort by date to show running balance") |
+| Round-off | Dedicated `Round Off` ledger line, never silently absorbed. If displayed totals differ from the sum of displayed rows due to rounding, show `ⓘ` with "Totals computed on unrounded values". |
+
+### 8.7 Currency & Locale
+- Each company has one base currency. Indian grouping (`12,45,000.00`) for INR, international (`124,500.00`) for others — grouping follows the **currency**, not the user locale.
+- Single-currency table: symbol in the column header (`Amount (₹)`), not in each cell.
+- Multi-currency table: ISO code column (`INR` / `USD`) + amount in original currency + base-currency equivalent column; FX rate & date shown in a tooltip.
+
+### 8.8 Voucher & Line States
+| State | Visual |
+| :--- | :--- |
+| Draft | `Draft` pill (muted), dashed left bar |
+| Posted | Default (no indicator) |
+| Optional / Memorandum (Tally) | `Optional` pill, amounts in `--text-muted`, excluded from totals with footnote |
+| Post-dated | `Post-dated` pill with date, `--status-warning` icon |
+| Cancelled / Void | Amounts struck through (`text-decoration: line-through`) in `--text-disabled`, `Cancelled` pill, excluded from totals |
+| Partially reconciled | Split pill `Matched ₹X / Pending ₹Y` with `--status-warning` |
+| Locked period (books closed) | `Lock` icon in row, edit actions disabled with tooltip |
+| Unbalanced (Dr ≠ Cr) | Row `--status-danger-bg`, `XCircle` icon, difference shown |
+
+### 8.9 Text Content in Cells
+- Ledger/party names: wrap up to 2 lines, then ellipsis with full name in tooltip and `title`.
+- Narration: single line ellipsis in table; full text in row expansion.
+- GSTIN, PAN, invoice no.: never wrap or truncate; `--font-mono`, copy-on-click affordance.
+- Dates: `DD-MMM-YYYY` (`05-Nov-2026`) in tables; FY displayed as `FY 2026–27`. Period filters must not cross FY boundaries without an explicit "multi-year" indicator.
+
+### 8.10 Keyboard & Editing
+- Arrow keys move the row cursor (`--bg-row-selected` + left bar); `Enter` opens/drills down; `Esc` returns up a level (Tally drill-down semantics, with breadcrumb).
+- Editable grid cells: `1px solid var(--border-input)` on focus, `--ring-focus` outline; per-cell error = danger border + icon + tooltip message.
+- Multi-select via `Space` / `Shift+↑↓`; bulk action bar appears sticky at the table bottom.
+
+### 8.11 Empty, Loading & Error
+- Empty: icon + one-line reason + primary action (e.g. "No vouchers in Nov 2026 — `Create Voucher (F8)`"). Header remains visible.
+- Loading: 8 skeleton rows matching column widths; totals row skeleton too.
+- Error: inline banner above the table with retry; never an empty table that looks like "no data".
+
+### 8.12 Accessibility
+- Native `<table>` semantics with `<th scope>`; group rows use `aria-level` / `aria-expanded` (treegrid when collapsible).
+- Screen-reader text: `(1,250.00)` → "minus 1,250 rupees"; `Dr`/`Cr` → "debit"/"credit"; `—` → "nil".
+- Status always conveyed by icon + text, not color (deuteranopia-safe for success/danger).
+
+### 8.13 Print & Export
+- `@media print`: Light tokens forced, no shadows/row fills except group rows, `thead { display: table-header-group }` to repeat headers, `tr { break-inside: avoid }`, totals row never orphaned (`break-before: avoid`), c/f and b/f rows per page, company name + GSTIN + FY + period + page `X of Y` in header/footer.
+- CSV/XLSX export: raw unformatted numbers with sign (no parentheses, no symbols), separate currency column.
+
+## 9. Iconography & Data Realism
+- **Icon Library:** `lucide-react` exclusively (`1.75px` stroke; `16px` inline, `18px` nav).
+- **Zero Lorem Ipsum:** Realistic Indian + global dummy data (*Bharat Hardware & Exports Pvt. Ltd.*, FY 2026–27, `INV/26-27/0042`, HDFC Bank Current A/c, CGST/SGST 9%+9%, IGST 18%, *Copper Wire Coil 2.5mm*, a USD export invoice for multi-currency previews). Previews must include at least one negative, one nil, one cancelled voucher and one multi-level group to exercise §8.
+
+## 10. Strict Do / Don't Guardrails
+- **DO** align every decimal point vertically using tabular numerals and the sign gutter.
+- **DO** make Company Name, Active FY, and `Alt+G` unmistakable at a glance.
+- **DO** keep focus outlines crisp and visible when tabbing voucher lines.
+- **DO** pair every status color with an icon or label.
+- **DON'T** color Debit or Credit columns red/green, or treat Dr as "bad".
+- **DON'T** use `--border-subtle` for interactive control borders.
+- **DON'T** use neon gradients, glowing orbs, glassmorphism, or rainbow icon circles.
+- **DON'T** center-align numbers, truncate numbers, or animate monetary values.
+- **DON'T** mix INR and USD formatting without ISO codes.
+- **DON'T** write `Cr` to mean crore in any table.
+- **DON'T** let any table cause page-level horizontal scroll at `390px`.
+
+## 11. Starter `frontend/src/styles/tokens.css`
 ```css
 :root {
+  /* Surfaces */
   --bg-canvas: #f8fafc;
   --bg-surface: #ffffff;
   --bg-muted: #f1f5f9;
+  --bg-table-header: #f1f5f9;
+  --bg-row-stripe: #fafbfc;
+  --bg-row-hover: #eef2f7;
+  --bg-row-selected: #e6eef7;
+  --bg-row-group: #f6f8fa;
+
+  /* Text */
   --text-primary: #0f172a;
   --text-muted: #475569;
-  --border-subtle: #e2e8f0;
-  --border-strong: #cbd5e1;
+  --text-disabled: #64748b;
+
+  /* Borders */
+  --border-subtle: #e2e8f0;   /* decorative only */
+  --border-input: #64748b;    /* >= 3:1 controls */
+  --border-strong: #94a3b8;   /* totals, floating frames */
+
+  /* Brand & focus */
   --accent-primary: #0f4c81;
   --accent-foreground: #ffffff;
   --ring-focus: #1d4ed8;
+
+  /* Status (state, never Dr/Cr side) */
   --status-success: #15803d;
   --status-success-bg: #dcfce7;
   --status-warning: #b45309;
@@ -109,35 +232,84 @@ Use semantic CSS variables only (zero raw hex values in TSX/CSS components). All
   --status-danger: #b91c1c;
   --status-danger-bg: #fee2e2;
 
-  --font-display: 'Plus Jakarta Sans', 'Inter', system-ui, sans-serif;
+  /* Type */
   --font-sans: 'Inter', system-ui, sans-serif;
+  --font-num: 'Inter', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+  --num-features: tabular-nums lining-nums slashed-zero;
+  --fs-kpi: 2rem;
+  --fs-h1: 1.5rem;
+  --fs-h2: 1.125rem;
+  --fs-h3: 0.9375rem;
+  --fs-body: 0.875rem;
+  --fs-sm: 0.8125rem;
+  --fs-th: 0.75rem;
+  --fs-xs: 0.6875rem;
 
+  /* Spacing (4px scale) */
+  --space-1: 4px;  --space-2: 8px;  --space-3: 12px; --space-4: 16px;
+  --space-5: 20px; --space-6: 24px; --space-8: 32px; --space-10: 40px;
+  --space-12: 48px;
+
+  /* Sizing */
+  --control-h: 40px;
+  --row-h-compact: 32px;
+  --row-h-comfortable: 40px;
+  --row-h-mobile: 44px;
+
+  /* Shape */
   --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 12px;
   --radius-full: 9999px;
 
-  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
-  --shadow-md: 0 10px 28px rgba(15, 23, 42, 0.10);
+  /* Elevation (floating layers only) */
+  --shadow-sm: 0 2px 6px rgba(15, 23, 42, 0.08);
+  --shadow-md: 0 10px 28px rgba(15, 23, 42, 0.12);
+  --shadow-sticky-col: 4px 0 6px -4px rgba(15, 23, 42, 0.12);
 
+  /* Layers */
+  --z-sticky: 10; --z-topbar: 20; --z-drawer: 40;
+  --z-modal: 50;  --z-palette: 60; --z-toast: 70;
+
+  /* Motion */
   --dur-fast: 120ms;
   --dur-base: 200ms;
   --dur-slow: 280ms;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+@media (max-width: 767px) {
+  :root {
+    --control-h: 44px;
+    --fs-kpi: 1.625rem;
+    --fs-h1: 1.25rem;
+    --fs-h2: 1.0625rem;
+  }
+}
+
 [data-theme="dark"] {
   --bg-canvas: #0b0f14;
   --bg-surface: #121821;
   --bg-muted: #1a222e;
+  --bg-table-header: #18202b;
+  --bg-row-stripe: #151c26;
+  --bg-row-hover: #1e2836;
+  --bg-row-selected: #16304a;
+  --bg-row-group: #161d27;
+
   --text-primary: #f1f5f9;
   --text-muted: #94a3b8;
+  --text-disabled: #7c8aa0;
+
   --border-subtle: #243040;
-  --border-strong: #334155;
-  --accent-primary: #38bdf8;
-  --accent-foreground: #082f49;
+  --border-input: #64748b;
+  --border-strong: #475569;
+
+  --accent-primary: #5ab0e8;
+  --accent-foreground: #06243a;
   --ring-focus: #7dd3fc;
+
   --status-success: #4ade80;
   --status-success-bg: rgba(74, 222, 128, 0.14);
   --status-warning: #fbbf24;
@@ -145,6 +317,18 @@ Use semantic CSS variables only (zero raw hex values in TSX/CSS components). All
   --status-danger: #f87171;
   --status-danger-bg: rgba(248, 113, 113, 0.14);
 
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.4);
   --shadow-md: 0 12px 32px rgba(0, 0, 0, 0.55);
+  --shadow-sticky-col: 4px 0 6px -4px rgba(0, 0, 0, 0.5);
 }
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --dur-base: 80ms; --dur-slow: 80ms; }
+}
+
+@media print {
+  /* Force light tokens; see §8.13 */
+  [data-theme="dark"] { color-scheme: light; }
+}
+```
+
