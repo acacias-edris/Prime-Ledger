@@ -94,6 +94,30 @@ const MONTH_ABBR = [
 ] as const
 
 /**
+ * Splits formatted currency into symbol, integer, and decimal parts for baseline-scaled KPI display.
+ */
+export function splitCurrencyParts(
+  value: string | bigint,
+  currency: SupportedCurrency = 'INR',
+): { symbol: string; integer: string; fraction: string; isNegative: boolean } {
+  const scaled = typeof value === 'bigint' ? value : toScaledInt(value)
+  const isNegative = scaled < 0n
+  const fixed2 = fromScaledInt(absBigInt(scaled), 2)
+  const [wholePart = '0', fracPart = '00'] = fixed2.split('.')
+  const groupedWhole =
+    currency === 'INR'
+      ? groupIndianInteger(wholePart)
+      : groupInternationalInteger(wholePart)
+
+  return {
+    symbol: CURRENCY_SYMBOLS[currency],
+    integer: groupedWhole,
+    fraction: `.${fracPart}`,
+    isNegative,
+  }
+}
+
+/**
  * Formats YYYY-MM-DD strictly as DD-MMM-YYYY (e.g. "24-Nov-2026") per DESIGN_SYSTEM.md §8.9.
  */
 export function formatDisplayDate(isoDate: string): string {
@@ -105,4 +129,25 @@ export function formatDisplayDate(isoDate: string): string {
   const month = MONTH_ABBR[monthIdx]
   if (!month) return isoDate
   return `${day}-${month}-${year}`
+}
+
+/**
+ * Formats YYYY-MM-DD as compact "26 Nov" for Day Book cells (year implied by FY).
+ */
+export function formatShortDate(isoDate: string): string {
+  const parts = isoDate.split('-')
+  if (parts.length !== 3) return isoDate
+  const monthIdx = Number(parts[1]) - 1
+  const day = parts[2].padStart(2, '0')
+  const month = MONTH_ABBR[monthIdx]
+  if (!month) return isoDate
+  return `${day} ${month}`
+}
+
+/**
+ * Extracts day and uppercase month from "DD-MMM-YYYY" for compliance date blocks.
+ */
+export function parseDateBlock(displayDate: string): { day: string; month: string } {
+  const [day = '—', month = ''] = displayDate.split('-')
+  return { day, month: month.toUpperCase() }
 }

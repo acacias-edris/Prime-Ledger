@@ -267,7 +267,9 @@ export function QuickVoucherDrawer({
                 )}
               >
                 <span>{item.label}</span>
-                <Kbd variant={active ? 'on-accent' : 'default'}>{item.shortKey}</Kbd>
+                <Kbd variant={active ? 'on-accent' : 'default'} revealOnHover>
+                  {item.shortKey}
+                </Kbd>
               </button>
             )
           })}
@@ -324,6 +326,7 @@ export function QuickVoucherDrawer({
               disabled={!isBalanced}
               title={saveDisabledReason}
               shortcut="Ctrl+Enter"
+              revealShortcutOnHover
             >
               Post Balanced Voucher
             </Button>
@@ -363,9 +366,7 @@ export function QuickVoucherDrawer({
         {/* Dynamic Double-Entry Lines */}
         <div className="space-y-2.5">
           <div className="flex items-center justify-between">
-            <h3 className="text-[var(--fs-h3)] font-semibold text-primary-text">
-              Ledger Entries (Dr / Cr)
-            </h3>
+            <h3 className="type-h3">Ledger Entries (Dr / Cr)</h3>
             <Button
               variant="secondary"
               size="sm"

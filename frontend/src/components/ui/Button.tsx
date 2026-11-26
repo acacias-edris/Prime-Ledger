@@ -13,17 +13,18 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   loading?: boolean
   leftIcon?: ReactNode
   shortcut?: string
+  revealShortcutOnHover?: boolean
 }
 
 const VARIANT_CLASSES: Record<ButtonVariant, string> = {
   primary:
-    'bg-accent text-accent-foreground border border-transparent hover:brightness-110 active:brightness-95',
+    'bg-accent text-accent-foreground border border-transparent hover:bg-accent-hover active:brightness-95',
   secondary:
     'bg-surface text-primary-text border border-border-input hover:bg-muted active:bg-row-hover',
   ghost:
     'bg-transparent text-primary-text border border-transparent hover:bg-muted active:bg-row-hover',
   danger:
-    'bg-danger-bg text-danger border border-danger/40 hover:bg-danger hover:text-accent-foreground active:brightness-95',
+    'bg-danger-bg text-danger border border-[var(--status-danger-border)] hover:bg-danger hover:text-accent-foreground active:brightness-95',
 }
 
 const SIZE_CLASSES: Record<ButtonSize, string> = {
@@ -39,6 +40,7 @@ export function Button({
   disabled,
   leftIcon,
   shortcut,
+  revealShortcutOnHover = false,
   className,
   children,
   type = 'button',
@@ -53,7 +55,7 @@ export function Button({
       disabled={isDisabled}
       aria-busy={loading || undefined}
       className={cn(
-        'inline-flex items-center justify-center rounded-md font-medium whitespace-nowrap transition-[background-color,border-color,filter,opacity] duration-[var(--dur-fast)] ease-[var(--ease-out)] cursor-pointer select-none',
+        'group inline-flex items-center justify-center rounded-md font-medium whitespace-nowrap transition-[background-color,border-color,filter,opacity] duration-[var(--dur-fast)] ease-[var(--ease-out)] cursor-pointer select-none',
         'disabled:cursor-not-allowed disabled:opacity-55',
         VARIANT_CLASSES[variant],
         SIZE_CLASSES[size],
@@ -66,9 +68,14 @@ export function Button({
       ) : (
         leftIcon
       )}
-      <span>{children}</span>
+      {children ? <span>{children}</span> : null}
       {shortcut && !loading ? (
-        <Kbd variant={variant === 'primary' ? 'on-accent' : 'default'}>{shortcut}</Kbd>
+        <Kbd
+          variant={variant === 'primary' ? 'on-accent' : 'default'}
+          revealOnHover={revealShortcutOnHover}
+        >
+          {shortcut}
+        </Kbd>
       ) : null}
     </button>
   )

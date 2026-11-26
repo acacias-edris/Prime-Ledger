@@ -1,57 +1,57 @@
 # Task State (Session Handoff Bridge)
 
-- **Last Updated:** 2026-11-26 19:33 IST
-- **Active Milestone:** Milestone 1 — Visual North Star
-- **Status:** Milestone 1 Built - Awaiting Visual QA #1
+- **Last Updated:** 2026-11-27 01:26 IST
+- **Active Milestone:** Milestone 1.1 — Visual Polish Pass (Visual North Star QA Fixes)
+- **Status:** Milestone 1.1 Implemented & Verified Locally (QA Screenshots Captured; Final `DataTable.tsx` Tweak Ready for Optional `1440×900` / `1280×800` Re-Check & Git Commit)
 - **Last Account / Tool Used:** Local Linux Mint Workspace
-- **Git / Sync Status:** Local Milestone 1 frontend files built and verified (awaiting browser Visual QA #1)
+- **Git / Sync Status:** Uncommitted working tree changes on `main` (20 modified files + 1 new file `frontend/src/components/ui/ShortcutSheetModal.tsx`; `qa-screenshots/` untracked/gitignored)
 
 ## Completed Files (Current Milestone)
-- `frontend/vite.config.ts`
-- `frontend/index.html`
+- `DESIGN_SYSTEM.md` (reconciled dark-mode elevation ladder `--bg-chrome`, `--bg-raised`, `--border-row`, `--shadow-card`, dark `--border-subtle: #2a3646`, dark `--bg-table-header` / `--bg-row-group: #1a222e`, Comfort `52px` / Tally `32px` row heights, KPI Inter tabular + table JetBrains Mono)
+- `CURRENT_TASK.md` (Milestone 1.1 Visual Polish checklist)
+- `frontend/index.html` (removed unused Plus Jakarta Sans font request; retained Inter + JetBrains Mono)
 - `frontend/src/styles/tokens.css`
 - `frontend/src/styles/index.css`
-- `frontend/src/lib/cn.ts`
-- `frontend/src/lib/decimal.ts`
 - `frontend/src/lib/format.ts`
 - `frontend/src/lib/dummyData.ts`
-- `frontend/src/hooks/useTheme.ts`
 - `frontend/src/hooks/useKeymap.ts`
 - `frontend/src/components/ui/Kbd.tsx`
 - `frontend/src/components/ui/Badge.tsx`
 - `frontend/src/components/ui/Button.tsx`
 - `frontend/src/components/ui/Card.tsx`
-- `frontend/src/components/ui/Input.tsx`
-- `frontend/src/components/ui/EmptyState.tsx`
 - `frontend/src/components/ui/Drawer.tsx`
-- `frontend/src/components/ui/DataTable.tsx`
+- `frontend/src/components/ui/DataTable.tsx` (updated `01:19` with `table-fixed`, `computedMaxHeight`, `scrolledX` state for `.sticky-first-col`, `align-top` cells, and hover/active sort chevrons)
 - `frontend/src/components/ui/CommandPalette.tsx`
+- `frontend/src/components/ui/ShortcutSheetModal.tsx` (new)
 - `frontend/src/components/layout/AppShell.tsx`
 - `frontend/src/features/dashboard/QuickVoucherDrawer.tsx`
 - `frontend/src/features/dashboard/FinancialCommandPage.tsx`
 - `frontend/src/App.tsx`
-- `frontend/src/main.tsx`
 
 ## Last Verification & Visual QA Result
-- Build Command (`cd frontend && npm run build`): Passed (`tsc -b && vite build` exited 0 in 5.70s; produced `dist/index.html` 1.23 kB, `dist/assets/index-DWQXHNwD.css` 32.91 kB, `dist/assets/index-DH5JAu_w.js` 508.48 kB).
+- Typecheck (`cd frontend && npx tsc --noEmit`): Passed (exit 0).
+- Build Command (`cd frontend && npm run build`): Passed (`tsc -b && vite build` exited 0 in `9.13s`; `dist/index.html` `1.19 kB`, `dist/assets/index-BAXe6kw4.css` `38.16 kB`, `dist/assets/index-vhFVOpwW.js` `521.58 kB`).
 - Lint Command (`cd frontend && npm run lint`): Passed (`eslint .` exited 0 with 0 errors and 0 warnings).
-- Guardrail Checks:
-  - Raw hex scan (`src/**/*.tsx`): Passed (`PASS: Zero raw hex values in TSX`).
-  - Legacy API scan (`useReactTable|getCoreRowModel|forwardRef|defaultProps`): Passed (`PASS: Strict React 19.3 + TanStack Table v9`).
-- Multimodal Visual QA: Pending — ready for `npm run dev` in Brave on Linux Mint and screenshot capture into `qa-screenshots/` (`m1-desktop-light-1440.png`, `m1-desktop-dark-drawer-1440.png`, `m1-desktop-palette-1440.png`, `m1-mobile-light-390.png`).
+- Guardrail Checks (`grep` on `frontend/src`):
+  - Raw hex scan (`*.tsx`): Passed (`PASS: Zero raw hex values in TSX`).
+  - Untyped font-size scan (`text-[var(--fs-` in `*.tsx`): Passed (`PASS: Zero untyped text-[var(--fs-*)]`).
+  - Legacy API scan (`useReactTable|getCoreRowModel|forwardRef|defaultProps` in `*.ts`/`*.tsx`): Passed (`PASS: Strict React 19.3 + TanStack Table v9`).
+- Multimodal Visual QA (`qa-screenshots/`, captured `2026-11-27 01:14–01:15 IST`):
+  - `qa-screenshots/m1-desktop-light.png` (`1920×1047`): Verified left-aligned `1360px` workspace, `56px` topbar with `FY 2026–27` chip, unified 4-cell KPI strip with scaled `₹`/`.00` and `Dr`/`Cr` suffixes, flattened BRS / GSTR-2B / Compliance Calendar rail cards, 5-column Day Book with zero horizontal scroll, and segmented filter control.
+  - `qa-screenshots/m1-desktop-dark.png` (`1920×1047`): Verified dark-mode elevation ladder (`--bg-chrome`, `--bg-canvas`, `--bg-surface`, `--bg-table-header`) and balanced contrast across KPI strip, Day Book, and right rail.
+  - `qa-screenshots/m1-command-palette.png` (`1920×1047`): Verified `640px` raised overlay (`--bg-raised`), single-line `40px` rows with voucher type icons, live next voucher numbers (`CNT/26-27/0044`, `PAY/26-27/0045`, etc.), and right-aligned `F4–F9` `<Kbd>` chips.
+  - `qa-screenshots/m1-mobile.png` (`800×1758`): Verified mobile `56px` topbar, unified `Position` KPI card, `"Tap a voucher to see its entries"` hint, horizontal filter strip, 2-line mobile voucher rows, hidden `<Kbd>` chips, and sticky bottom action bar (`Payment | Receipt | + New Voucher`).
 
 ## Known Issues or Blockers
-- None. (Note: In TanStack Table v9 without `columnVisibilityFeature`, `DataTable.tsx` uses `row.getAllCells()` per `@tanstack/react-table` v9 core API.)
+- `qa-screenshots/` were captured at `01:14–01:15` (before the `01:19` `DataTable.tsx` update), at `1920×1047` desktop / `800×1758` mobile rather than `1440×900` / `1280×800`, and without an open `QuickVoucherDrawer` or scrolled-to-footer `tfoot` screenshot.
+- Milestone 1.1 changes are uncommitted in the local git working tree.
 
-## Exact Next Step (For Next Session or Visual QA)
-1. Run `cd frontend && npm run dev`, open `http://localhost:5173` in Brave on Linux Mint, and verify the Manual Tally Keyboard & Accounting Math checklist + capture the 4 `qa-screenshots/` PNGs for Visual QA Loop #1.
-2. Once Visual QA Loop #1 passes, proceed to Milestone 2 (Backend Foundation + Core Double-Entry Ledger Engine & Reports).
+## Exact Next Step
+1. If desired, capture `1440×900` (including open `QuickVoucherDrawer` + visible Day Book `tfoot` totals row) and `1280×800` screenshots to verify the `01:19` `DataTable.tsx` sticky/height adjustments, then commit Milestone 1.1 to `main`.
+2. Update `CURRENT_TASK.md` for **Milestone 2 — Backend Foundation + Core Double-Entry Ledger Engine & Reports** (`backend/` FastAPI `0.165.0`, SQLAlchemy `2.1` Async + `MonetaryNumeric18_4`, Alembic `1.20.1` `render_as_batch=True`, core `companies`, `fiscal_years`, `account_groups`, `ledgers`, `vouchers`, `voucher_lines`, `audit_logs`, `seed/dummy_company.py`, and pytest double-entry invariant tests).
 
 ## Beginner Architecture Summary (Latest Milestone)
-Think of Milestone 1 like constructing a bank's physical branch, vault doors, and teller counters before connecting the live payment wires:
-
-- **Single Source of Truth for Styling ([tokens.css](file:///home/acacia/projects/ledgerprime/frontend/src/styles/tokens.css) + [index.css](file:///home/acacia/projects/ledgerprime/frontend/src/styles/index.css) + [useTheme.ts](file:///home/acacia/projects/ledgerprime/frontend/src/hooks/useTheme.ts)):** Every color, spacing step, font, and Light/Dark swap lives in CSS custom properties in `tokens.css` and maps directly into Tailwind CSS v4 utilities via `@theme inline`. Flipping the theme toggle updates `data-theme` on `<html>` (persisted in `localStorage`), while `@media print` forces crisp Light Mode A4 output with zero extra RAM.
-- **Exact Money Without Rounding Bugs ([decimal.ts](file:///home/acacia/projects/ledgerprime/frontend/src/lib/decimal.ts) + [format.ts](file:///home/acacia/projects/ledgerprime/frontend/src/lib/format.ts) + [dummyData.ts](file:///home/acacia/projects/ledgerprime/frontend/src/lib/dummyData.ts)):** Normal JavaScript floating-point numbers can corrupt totals. Instead, amounts are parsed into scaled whole-number `BigInt` values (`* 10000n`) for exact arithmetic and formatted into Indian Lakh/Crore grouping (`₹14,82,450.00`), international grouping for USD/GBP, `—` for nil Dr/Cr sides, and `DD-MMM-YYYY` dates.
-- **Reusable UI Primitives & Shell ([components/ui/](file:///home/acacia/projects/ledgerprime/frontend/src/components/ui/DataTable.tsx) + [AppShell.tsx](file:///home/acacia/projects/ledgerprime/frontend/src/components/layout/AppShell.tsx)):** `Kbd`, `Badge`, `Button`, `Card`, `Input`, `EmptyState`, `Drawer`, `DataTable` (built with TanStack Table v9 `useTable` + `tableFeatures`), and `CommandPalette` provide accessible, state-complete building blocks inside a responsive sidebar + sticky topbar layout.
-- **Tally Keyboard Engine ([useKeymap.ts](file:///home/acacia/projects/ledgerprime/frontend/src/hooks/useKeymap.ts) + [CommandPalette.tsx](file:///home/acacia/projects/ledgerprime/frontend/src/components/ui/CommandPalette.tsx)):** A capture-phase window listener intercepts `F4–F9`, `Alt+4`–`Alt+9`, `Alt+G`, `Esc`, and `Ctrl+Enter` (blocking `F5` browser refresh while ignoring non-chord typing inside inputs).
-- **Interactive Dashboard & Double-Entry Dry Run ([FinancialCommandPage.tsx](file:///home/acacia/projects/ledgerprime/frontend/src/features/dashboard/FinancialCommandPage.tsx) + [QuickVoucherDrawer.tsx](file:///home/acacia/projects/ledgerprime/frontend/src/features/dashboard/QuickVoucherDrawer.tsx) + [App.tsx](file:///home/acacia/projects/ledgerprime/frontend/src/App.tsx)):** `App.tsx` coordinates the active workspace, Day Book vouchers, `QuickVoucherDrawer`, and `CommandPalette`. Posting a balanced voucher validates every line through Zod v4 + `BigInt`, prepends it to the sortable Day Book table, opens its inline leg drill-down, and updates KPI balances immediately without float drift.
+- **Design Contract & Dark Elevation Ladder ([DESIGN_SYSTEM.md](file:///home/acacia/projects/ledgerprime/DESIGN_SYSTEM.md), [tokens.css](file:///home/acacia/projects/ledgerprime/frontend/src/styles/tokens.css), [index.css](file:///home/acacia/projects/ledgerprime/frontend/src/styles/index.css), [index.html](file:///home/acacia/projects/ledgerprime/frontend/index.html)):** Defines explicit light/dark surface steps (`--bg-chrome` for sidebar/topbar, `--bg-surface` for Level-1 cards with `--shadow-card`, `--bg-raised` for drawers/modals/palette, `--border-row` vs `--border-subtle`) and semantic `.type-*` typography utilities for Tailwind v4.
+- **KPI Strip, Typography & Right Rail ([FinancialCommandPage.tsx](file:///home/acacia/projects/ledgerprime/frontend/src/features/dashboard/FinancialCommandPage.tsx), [format.ts](file:///home/acacia/projects/ledgerprime/frontend/src/lib/format.ts), [Badge.tsx](file:///home/acacia/projects/ledgerprime/frontend/src/components/ui/Badge.tsx), [dummyData.ts](file:///home/acacia/projects/ledgerprime/frontend/src/lib/dummyData.ts)):** Renders the desktop 4-cell KPI strip with scaled `₹`/`.00` affixes and `Dr`/`Cr` suffixes, flattened BRS and GSTR-2B rows, `40px` compliance calendar date blocks with urgency cues, `StatusIndicator` dots, and a compact mobile `Position` card.
+- **5-Column Day Book & Sticky Table Engine ([DataTable.tsx](file:///home/acacia/projects/ledgerprime/frontend/src/components/ui/DataTable.tsx), [FinancialCommandPage.tsx](file:///home/acacia/projects/ledgerprime/frontend/src/features/dashboard/FinancialCommandPage.tsx)):** Displays `Date | Voucher No. | Particulars | Debit (₹) | Credit (₹)` cleanly on desktop without horizontal scroll, supports `52px` Comfort / `32px` Tally row density, keyboard row navigation, sticky header/first-column scroll tracking, and a dedicated `64px` 2-line row list on mobile.
+- **Shell, Split-Button & Shortcut Overlays ([AppShell.tsx](file:///home/acacia/projects/ledgerprime/frontend/src/components/layout/AppShell.tsx), [CommandPalette.tsx](file:///home/acacia/projects/ledgerprime/frontend/src/components/ui/CommandPalette.tsx), [ShortcutSheetModal.tsx](file:///home/acacia/projects/ledgerprime/frontend/src/components/ui/ShortcutSheetModal.tsx), [QuickVoucherDrawer.tsx](file:///home/acacia/projects/ledgerprime/frontend/src/features/dashboard/QuickVoucherDrawer.tsx), [useKeymap.ts](file:///home/acacia/projects/ledgerprime/frontend/src/hooks/useKeymap.ts), [App.tsx](file:///home/acacia/projects/ledgerprime/frontend/src/App.tsx)):** Left-aligns the `1360px` workspace, places Payment/Receipt inside the topbar `New Voucher (F8)` split-button (and mobile sticky bottom bar), moves keyboard shortcuts to the `?` modal, and powers the `Alt+G` Go-To Command Palette with live next voucher numbers.

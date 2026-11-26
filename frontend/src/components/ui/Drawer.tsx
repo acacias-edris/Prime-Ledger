@@ -64,23 +64,20 @@ export function Drawer({
       {/* Slide-over panel */}
       <div
         className={cn(
-          'relative z-10 flex h-full flex-col border-l border-border-strong bg-surface text-primary-text shadow-md',
+          'relative z-10 flex h-full flex-col border-l border-border-strong bg-raised text-primary-text shadow-md',
           'transition-transform duration-[var(--dur-base)] ease-[var(--ease-out)]',
           widthClassName,
         )}
       >
         {/* Sticky Drawer Header */}
-        <div className="shrink-0 border-b border-border-subtle bg-surface px-4 py-3.5 sm:px-6">
+        <div className="shrink-0 border-b border-border-subtle bg-raised px-4 py-3.5 sm:px-6">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <h2
-                id="drawer-title"
-                className="text-[var(--fs-h2)] font-semibold leading-[1.3] tracking-[-0.015em] text-primary-text"
-              >
+              <h2 id="drawer-title" className="type-h2">
                 {title}
               </h2>
               {subtitle ? (
-                <p className="mt-0.5 text-[13px] text-muted-text">{subtitle}</p>
+                <p className="mt-0.5 text-[12.5px] font-medium text-muted-text">{subtitle}</p>
               ) : null}
             </div>
             <Button
@@ -92,7 +89,9 @@ export function Drawer({
               className="shrink-0 px-2"
             >
               <X className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
-              <Kbd className="hidden sm:inline-flex">Esc</Kbd>
+              <Kbd revealOnHover className="hidden sm:inline-flex">
+                Esc
+              </Kbd>
             </Button>
           </div>
           {headerExtra ? <div className="mt-3">{headerExtra}</div> : null}
@@ -103,7 +102,7 @@ export function Drawer({
 
         {/* Sticky Footer */}
         {footer ? (
-          <div className="shrink-0 border-t border-border-strong bg-surface px-4 py-3.5 sm:px-6">
+          <div className="shrink-0 border-t border-border-strong bg-raised px-4 py-3.5 sm:px-6">
             {footer}
           </div>
         ) : null}

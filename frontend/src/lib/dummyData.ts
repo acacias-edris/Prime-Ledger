@@ -63,8 +63,9 @@ export interface ComplianceDueItem {
   filing: string
   period: string
   dueDate: string
-  status: 'warning' | 'neutral' | 'success'
+  status: 'danger' | 'warning' | 'neutral' | 'success'
   statusText: string
+  urgentPill?: boolean
 }
 
 export interface VoucherTypeMeta {
@@ -223,13 +224,14 @@ export const COMPLIANCE_SNAPSHOT = {
       dueDate: '07-Dec-2026',
       status: 'warning',
       statusText: 'Due in 11d',
+      urgentPill: true,
     },
     {
       id: 'due-gstr1',
       filing: 'GSTR-1 Outward Return',
       period: 'Nov 2026',
       dueDate: '11-Dec-2026',
-      status: 'warning',
+      status: 'neutral',
       statusText: 'Due in 15d',
     },
     {
@@ -238,7 +240,7 @@ export const COMPLIANCE_SNAPSHOT = {
       period: 'Nov 2026',
       dueDate: '14-Dec-2026',
       status: 'neutral',
-      statusText: 'Auto-generates',
+      statusText: 'Auto-drafts',
     },
     {
       id: 'due-gstr3b',
@@ -300,7 +302,7 @@ export const INITIAL_VOUCHERS: DayBookVoucher[] = [
     voucherNo: 'EXP/26-27/0009',
     voucherType: 'SALES',
     particulars: 'Nordic Fasteners AB (Sweden)',
-    narration: 'Export under LUT (Zero-Rated) · USD 4,500.00 @ ₹84.4000',
+    narration: 'Export under LUT (Zero-Rated) · FX @ ₹84.4000',
     referenceNo: 'SB-902145',
     currency: 'USD',
     foreignAmount: '4500.0000',

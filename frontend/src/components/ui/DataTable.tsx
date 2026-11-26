@@ -28,6 +28,8 @@ export type DataTableColumnDef<TData extends object> = ColumnDef<
 export interface LedgerColumnMeta {
   align?: 'left' | 'right' | 'center'
   mono?: boolean
+  width?: string
+  widthClassName?: string
   minWidth?: string
   dividerLeft?: boolean
 }
@@ -69,9 +71,10 @@ export function DataTable<TData extends object>({
   getRowClassName,
   onRowActivate,
   ariaLabel,
-  maxHeightClassName = 'max-h-[540px]',
+  maxHeightClassName,
 }: DataTableProps<TData>) {
   const [cursorIndex, setCursorIndex] = useState<number>(-1)
+  const [scrolledX, setScrolledX] = useState(false)
 
   const table = useTable({
     features: dataTableFeatures,
@@ -101,12 +104,18 @@ export function DataTable<TData extends object>({
       ? 'h-[var(--row-h-mobile)] md:h-[var(--row-h-compact)] text-[13px]'
       : 'h-[var(--row-h-mobile)] md:h-[var(--row-h-comfortable)] text-[14px]'
 
+  const computedMaxHeight =
+    maxHeightClassName ??
+    (density === 'compact'
+      ? 'max-h-[420px]'
+      : 'max-h-[680px]')
+
   return (
     <div className="w-full">
       {error ? (
         <div
           role="alert"
-          className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-md border border-danger/35 bg-danger-bg px-4 py-3 text-[13px] text-danger"
+          className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-md border border-[var(--status-danger-border)] bg-danger-bg px-4 py-3 text-[13px] text-danger"
         >
           <div className="flex items-center gap-2 font-medium">
             <AlertTriangle className="h-4 w-4 shrink-0" strokeWidth={1.75} aria-hidden="true" />
@@ -128,17 +137,19 @@ export function DataTable<TData extends object>({
       <div
         tabIndex={0}
         onKeyDown={handleTableKeyDown}
+        onScroll={(e) => setScrolledX(e.currentTarget.scrollLeft > 2)}
+        data-scrolled-x={scrolledX ? 'true' : 'false'}
         aria-label={ariaLabel}
         className={cn(
-          'table-scroll w-full border-t border-border-subtle focus-visible:outline-2 focus-visible:outline-ring-focus',
-          maxHeightClassName,
+          'table-scroll w-full border-t border-border-row focus-visible:outline-2 focus-visible:outline-ring-focus',
+          computedMaxHeight,
         )}
       >
-        <table className="w-full min-w-[780px] border-collapse text-left">
+        <table className="w-full min-w-[680px] table-fixed border-collapse text-left">
           <thead className="sticky top-0 z-[var(--z-sticky)] bg-table-header">
             {table.getHeaderGroups().map((headerGroup) => (
-              <tr key={headerGroup.id} className="border-b border-border-subtle">
-                {headerGroup.headers.map((header) => {
+              <tr key={headerGroup.id} className="h-9 border-b border-border-row">
+                {headerGroup.headers.map((header, colIdx) => {
                   const meta = header.column.columnDef.meta as LedgerColumnMeta | undefined
                   const canSort = header.column.getCanSort()
                   const activeSort = sortingState.find((s) => s.id === header.column.id)
@@ -153,14 +164,19 @@ export function DataTable<TData extends object>({
                       key={header.id}
                       scope="col"
                       aria-sort={canSort ? ariaSort : undefined}
-                      style={meta?.minWidth ? { minWidth: meta.minWidth } : undefined}
+                      style={{
+                        ...(meta?.width ? { width: meta.width } : undefined),
+                        ...(meta?.minWidth ? { minWidth: meta.minWidth } : undefined),
+                      }}
                       onClick={canSort ? header.column.getToggleSortingHandler() : undefined}
                       className={cn(
-                        'px-3 py-2.5 text-[var(--fs-th)] font-semibold uppercase leading-[1.2] tracking-[0.03em] text-muted-text whitespace-nowrap select-none',
+                        'group/th px-3 py-2 text-[11px] font-semibold uppercase leading-[1.2] tracking-[0.05em] text-muted-text whitespace-nowrap select-none align-middle',
+                        colIdx === 0 && 'sticky left-0 z-[calc(var(--z-sticky)+1)] sticky-first-col bg-table-header',
                         canSort && 'cursor-pointer hover:text-primary-text',
-                        meta?.align === 'right' && 'text-right',
+                        meta?.widthClassName,
+                        meta?.align === 'right' && 'text-right pr-4',
                         meta?.align === 'center' && 'text-center',
-                        meta?.dividerLeft && 'border-l border-border-subtle',
+                        meta?.dividerLeft && 'border-l border-border-row',
                       )}
                     >
                       <span
@@ -173,12 +189,16 @@ export function DataTable<TData extends object>({
                         {canSort ? (
                           activeSort ? (
                             activeSort.desc ? (
-                              <ArrowDown className="h-3.5 w-3.5 text-accent" strokeWidth={1.75} aria-hidden="true" />
+                              <ArrowDown className="h-3 w-3 text-accent" strokeWidth={1.75} aria-hidden="true" />
                             ) : (
-                              <ArrowUp className="h-3.5 w-3.5 text-accent" strokeWidth={1.75} aria-hidden="true" />
+                              <ArrowUp className="h-3 w-3 text-accent" strokeWidth={1.75} aria-hidden="true" />
                             )
                           ) : (
-                            <ArrowUpDown className="h-3 w-3 opacity-55" strokeWidth={1.75} aria-hidden="true" />
+                            <ArrowUpDown
+                              className="h-3 w-3 opacity-0 transition-opacity duration-[var(--dur-fast)] group-hover/th:opacity-70 group-focus-visible/th:opacity-70"
+                              strokeWidth={1.75}
+                              aria-hidden="true"
+                            />
                           )
                         ) : null}
                       </span>
@@ -192,9 +212,9 @@ export function DataTable<TData extends object>({
           <tbody>
             {loading ? (
               Array.from({ length: 8 }).map((_, rowIdx) => (
-                <tr key={`skeleton-${rowIdx}`} className={cn('border-b border-border-subtle', rowHeightClass)}>
+                <tr key={`skeleton-${rowIdx}`} className={cn('border-b border-border-row', rowHeightClass)}>
                   {columns.map((_col, colIdx) => (
-                    <td key={`skeleton-${rowIdx}-${colIdx}`} className="px-3 py-2">
+                    <td key={`skeleton-${rowIdx}-${colIdx}`} className="px-3 py-2.5 align-top">
                       <div className="h-3.5 w-full max-w-[140px] rounded-sm bg-muted animate-pulse" />
                     </td>
                   ))}
@@ -225,7 +245,7 @@ export function DataTable<TData extends object>({
                       onRowActivate?.(row.original)
                     }}
                     className={cn(
-                      'border-b border-border-subtle transition-colors duration-[var(--dur-fast)] ease-[var(--ease-out)]',
+                      'border-b border-border-row transition-colors duration-[var(--dur-fast)] ease-[var(--ease-out)]',
                       rowHeightClass,
                       onRowActivate && 'cursor-pointer',
                       isSelected
@@ -234,18 +254,21 @@ export function DataTable<TData extends object>({
                       customClass,
                     )}
                   >
-                    {row.getAllCells().map((cell) => {
+                    {row.getAllCells().map((cell, colIdx) => {
                       const meta = cell.column.columnDef.meta as LedgerColumnMeta | undefined
                       return (
                         <td
                           key={cell.id}
                           style={meta?.minWidth ? { minWidth: meta.minWidth } : undefined}
                           className={cn(
-                            'px-3 py-2 align-middle text-primary-text',
-                            meta?.align === 'right' && 'text-right pr-3',
+                            'px-3 pt-[10px] pb-2 align-top text-primary-text',
+                            colIdx === 0 && 'sticky left-0 z-[var(--z-sticky)] sticky-first-col bg-inherit',
+                            density === 'compact' && 'py-1.5 align-middle',
+                            meta?.widthClassName,
+                            meta?.align === 'right' && 'text-right pr-4',
                             meta?.align === 'center' && 'text-center',
-                            meta?.mono && 'tabular-mono',
-                            meta?.dividerLeft && 'border-l border-border-subtle',
+                            meta?.mono && 'code-mono',
+                            meta?.dividerLeft && 'border-l border-border-row',
                           )}
                         >
                           <table.FlexRender cell={cell} />

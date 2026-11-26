@@ -2,7 +2,7 @@
 
 > **Strict Agent Directive:** Every color, font size, spacing value, radius, shadow, z-index, and motion duration in the UI MUST come from the semantic tokens below (see §11 `tokens.css`). Never invent unmapped hex values or override this contract without updating `DESIGN_SYSTEM.md` first.
 
-> **Revision v2 changes:** Dr/Cr decoupled from status colors · new `--border-input` (≥3:1) · separate row-state surfaces · spacing/type/z-index tokens · density modes · sticky/scroll contract · new **§8 Numeric Formatting & Accounting Table States** · print & a11y rules.
+> **Revision v2.1 (Milestone 1.1 Polish) changes:** Reconciled dark-mode elevation ladder (`--bg-chrome`, `--bg-raised`, `--border-row`, `--shadow-card`, dark `--border-subtle: #2a3646`, dark `--bg-table-header` / `--bg-row-group: #1a222e`) · KPI figures in Inter tabular (`--font-num`), table figures & codes in JetBrains Mono (`--font-mono`) · Comfort Day Book 2-line row `52px`, Tally compact single-line `32px` · Kbd & badge diet.
 
 ## 1. Visual Identity & Aesthetic Direction
 - **Product Personality:** Swiss-precision financial workbench — merges **Tally Prime's zero-latency keyboard efficiency** with **QuickBooks' calm, legible executive clarity**.
@@ -21,17 +21,20 @@ Semantic CSS variables only (zero raw hex in TSX/CSS). Body text ≥ 4.5:1 (WCAG
 | Role | CSS Variable | Light | Dark | Strict Usage Rule |
 | :--- | :--- | :--- | :--- | :--- |
 | Page Canvas | `--bg-canvas` | `#F8FAFC` | `#0B0F14` | Workspace canvas |
-| Primary Surface | `--bg-surface` | `#FFFFFF` | `#121821` | Tables, cards, modals, drawers, topbar |
-| Subtle Surface | `--bg-muted` | `#F1F5F9` | `#1A222E` | `<Kbd>` chips, sidebar active fill, secondary hover |
-| Table Header | `--bg-table-header` | `#F1F5F9` | `#18202B` | Sticky table header only |
+| Chrome Surface | `--bg-chrome` | `#FFFFFF` | `#0E131A` | Topbar & sidebar shell |
+| Primary Surface | `--bg-surface` | `#FFFFFF` | `#121821` | Tables, KPI strip, Level-1 cards |
+| Raised Overlay | `--bg-raised` | `#FFFFFF` | `#182130` | Drawers, modals, command palette, popovers |
+| Subtle Surface | `--bg-muted` | `#F1F5F9` | `#1A222E` | `<Kbd>` chips, segmented track, secondary hover |
+| Table Header | `--bg-table-header` | `#F1F5F9` | `#1A222E` | Sticky table header only |
 | Zebra Stripe | `--bg-row-stripe` | `#FAFBFC` | `#151C26` | Optional alternate rows (off by default) |
 | Row Hover | `--bg-row-hover` | `#EEF2F7` | `#1E2836` | Pointer hover on a row |
 | Row Selected / Cursor | `--bg-row-selected` | `#E6EEF7` | `#16304A` | Keyboard cursor row & selected rows (+ `2px` inset left bar `--accent-primary`) |
-| Group / Subtotal Row | `--bg-row-group` | `#F6F8FA` | `#161D27` | Ledger group headers and subtotal rows |
+| Group / Subtotal Row | `--bg-row-group` | `#F6F8FA` | `#1A222E` | Ledger group headers, subtotal, and sticky totals rows |
 | Primary Text | `--text-primary` | `#0F172A` | `#F1F5F9` | Headings, ledger names, all monetary figures incl. Dr & Cr |
 | Muted Text | `--text-muted` | `#475569` | `#94A3B8` | Column labels, dates, metadata |
 | Disabled / Nil Text | `--text-disabled` | `#64748B` | `#7C8AA0` | Nil/N-A markers, disabled controls (still ≥ 4.5:1 on surface) |
-| Hairline Border | `--border-subtle` | `#E2E8F0` | `#243040` | **Decorative only:** table gridlines, card frames |
+| Row Hairline Border | `--border-row` | `#E2E8F0` | `#1C2532` | **Decorative only:** internal table row dividers |
+| Hairline Border | `--border-subtle` | `#E2E8F0` | `#2A3646` | **Decorative only:** card frames on canvas |
 | Input Border | `--border-input` | `#64748B` | `#64748B` | Inputs, comboboxes, checkboxes (≈4.7:1 light / ≈3.6:1 dark) |
 | Strong Border | `--border-strong` | `#94A3B8` | `#475569` | Subtotal & grand-total rules, floating layer frames |
 | Primary Brand CTA | `--accent-primary` | `#0F4C81` | `#5AB0E8` | Primary buttons, active nav bar ONLY |
@@ -94,7 +97,7 @@ Semantic CSS variables only (zero raw hex in TSX/CSS). Body text ≥ 4.5:1 (WCAG
 ## 8. Numeric Formatting & Accounting Table States
 
 ### 8.1 Table Anatomy & Density
-- **Density modes** (user toggle, persisted): `compact` = `32px` rows / `13px` cells (Tally mode); `comfortable` = `40px` rows / `14px` cells (default). Mobile always `44px`.
+- **Density modes** (user toggle, persisted): `compact` = `32px` single-line rows / `13px` cells (Tally mode); `comfortable` = `52px` two-line rows (or `40px` single-line) / `14px` cells (default). Mobile always `>= 44px` (`64px` 2-line mobile Day Book rows).
 - Header: sticky, `--bg-table-header`, `--fs-th` uppercase, sort icon (`ArrowUp`/`ArrowDown`/`ArrowUpDown`) with `aria-sort`.
 - Rules: `1px solid var(--border-subtle)` horizontal only; no vertical rules except between Dr | Cr column pairs.
 - Alignment: text left; all amounts, quantities, rates, % right-aligned; dates left; status centered.

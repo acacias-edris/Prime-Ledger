@@ -13,6 +13,7 @@ import { Button } from './components/ui/Button'
 import { Card } from './components/ui/Card'
 import { CommandPalette } from './components/ui/CommandPalette'
 import { EmptyState } from './components/ui/EmptyState'
+import { ShortcutSheetModal } from './components/ui/ShortcutSheetModal'
 import { FinancialCommandPage } from './features/dashboard/FinancialCommandPage'
 import {
   QUICK_VOUCHER_FORM_ID,
@@ -25,6 +26,7 @@ export default function App() {
   const [activeNav, setActiveNav] = useState<string>('dashboard')
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const [shortcutSheetOpen, setShortcutSheetOpen] = useState(false)
 
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [drawerVoucherType, setDrawerVoucherType] = useState<VoucherType>('SALES')
@@ -41,6 +43,7 @@ export default function App() {
 
   const handleOpenVoucher = useCallback((type: VoucherType) => {
     setPaletteOpen(false)
+    setShortcutSheetOpen(false)
     setMobileNavOpen(false)
     setDrawerVoucherType(type)
     setDrawerOpen(true)
@@ -48,11 +51,20 @@ export default function App() {
 
   const handleTogglePalette = useCallback(() => {
     setMobileNavOpen(false)
+    setShortcutSheetOpen(false)
     setPaletteOpen((prev) => !prev)
   }, [])
 
+  const handleToggleShortcutSheet = useCallback(() => {
+    setPaletteOpen(false)
+    setMobileNavOpen(false)
+    setShortcutSheetOpen((prev) => !prev)
+  }, [])
+
   const handleEscape = useCallback(() => {
-    if (paletteOpen) {
+    if (shortcutSheetOpen) {
+      setShortcutSheetOpen(false)
+    } else if (paletteOpen) {
       setPaletteOpen(false)
     } else if (drawerOpen) {
       setDrawerOpen(false)
@@ -61,7 +73,7 @@ export default function App() {
     } else if (selectedVoucherId) {
       setSelectedVoucherId(null)
     }
-  }, [paletteOpen, drawerOpen, mobileNavOpen, selectedVoucherId])
+  }, [shortcutSheetOpen, paletteOpen, drawerOpen, mobileNavOpen, selectedVoucherId])
 
   const handleSubmitActiveForm = useCallback(() => {
     const form = document.getElementById(QUICK_VOUCHER_FORM_ID) as HTMLFormElement | null
@@ -73,6 +85,7 @@ export default function App() {
     onOpenVoucher: handleOpenVoucher,
     onEscape: handleEscape,
     onSubmitActiveForm: handleSubmitActiveForm,
+    onToggleShortcutSheet: handleToggleShortcutSheet,
     isFormSubmitEnabled: drawerOpen,
   })
 
@@ -97,6 +110,7 @@ export default function App() {
         onToggleTheme={toggleTheme}
         onOpenCommandPalette={() => setPaletteOpen(true)}
         onOpenVoucher={handleOpenVoucher}
+        onOpenShortcutSheet={() => setShortcutSheetOpen(true)}
         mobileNavOpen={mobileNavOpen}
         onSetMobileNavOpen={setMobileNavOpen}
       >
@@ -153,12 +167,17 @@ export default function App() {
         }}
       />
 
+      <ShortcutSheetModal
+        open={shortcutSheetOpen}
+        onClose={() => setShortcutSheetOpen(false)}
+      />
+
       {/* Non-intrusive Confirmation Toast */}
       {toastMessage ? (
         <div
           role="status"
           aria-live="polite"
-          className="fixed bottom-5 right-5 z-[var(--z-toast)] flex items-center gap-2 rounded-md border border-success/35 bg-surface px-4 py-3 text-[13px] font-medium text-primary-text shadow-md print:hidden"
+          className="fixed bottom-20 md:bottom-5 right-5 z-[var(--z-toast)] flex items-center gap-2 rounded-md border border-[var(--status-success-border)] bg-raised px-4 py-3 text-[13px] font-medium text-primary-text shadow-md print:hidden"
         >
           <CheckCircle2 className="h-4 w-4 shrink-0 text-success" strokeWidth={2} />
           <span>{toastMessage}</span>

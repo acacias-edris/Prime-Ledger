@@ -6,6 +6,7 @@ export interface UseKeymapOptions {
   onOpenVoucher: (voucherType: VoucherType) => void
   onEscape: () => void
   onSubmitActiveForm?: () => void
+  onToggleShortcutSheet?: () => void
   isFormSubmitEnabled?: boolean
 }
 
@@ -48,6 +49,7 @@ export function useKeymap({
   onOpenVoucher,
   onEscape,
   onSubmitActiveForm,
+  onToggleShortcutSheet,
   isFormSubmitEnabled = false,
 }: UseKeymapOptions): void {
   useEffect(() => {
@@ -97,6 +99,12 @@ export function useKeymap({
       if (inEditable) {
         return
       }
+
+      // 7. '?' opens Keyboard Shortcut Sheet
+      if (key === '?' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        event.preventDefault()
+        onToggleShortcutSheet?.()
+      }
     }
 
     window.addEventListener('keydown', handleKeyDown, { capture: true })
@@ -106,6 +114,7 @@ export function useKeymap({
     onOpenVoucher,
     onEscape,
     onSubmitActiveForm,
+    onToggleShortcutSheet,
     isFormSubmitEnabled,
   ])
 }
