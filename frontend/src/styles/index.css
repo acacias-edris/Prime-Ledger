@@ -1,0 +1,143 @@
+@import 'tailwindcss';
+@import './tokens.css';
+
+/* Enable [data-theme="dark"] dark-mode variant alongside runtime semantic CSS tokens */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* Map all semantic CSS custom properties from tokens.css into Tailwind v4 utilities */
+@theme inline {
+  --color-canvas: var(--bg-canvas);
+  --color-surface: var(--bg-surface);
+  --color-muted: var(--bg-muted);
+  --color-table-header: var(--bg-table-header);
+  --color-row-stripe: var(--bg-row-stripe);
+  --color-row-hover: var(--bg-row-hover);
+  --color-row-selected: var(--bg-row-selected);
+  --color-row-group: var(--bg-row-group);
+  --color-backdrop: var(--bg-backdrop);
+
+  --color-primary-text: var(--text-primary);
+  --color-muted-text: var(--text-muted);
+  --color-disabled-text: var(--text-disabled);
+
+  --color-border-subtle: var(--border-subtle);
+  --color-border-input: var(--border-input);
+  --color-border-strong: var(--border-strong);
+
+  --color-accent: var(--accent-primary);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-ring-focus: var(--ring-focus);
+
+  --color-success: var(--status-success);
+  --color-success-bg: var(--status-success-bg);
+  --color-warning: var(--status-warning);
+  --color-warning-bg: var(--status-warning-bg);
+  --color-danger: var(--status-danger);
+  --color-danger-bg: var(--status-danger-bg);
+
+  --font-display: var(--font-display);
+  --font-sans: var(--font-sans);
+  --font-num: var(--font-num);
+  --font-mono: var(--font-mono);
+
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-full: var(--radius-full);
+
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+}
+
+@layer base {
+  html,
+  body {
+    background-color: var(--bg-canvas);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: var(--fs-body);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: clip;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-display);
+  }
+
+  *:focus-visible {
+    outline: 2px solid var(--ring-focus);
+    outline-offset: 2px;
+  }
+}
+
+.tabular-ledger {
+  font-family: var(--font-num);
+  font-variant-numeric: var(--num-features);
+}
+
+.tabular-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: var(--num-features);
+}
+
+/* Single scroll container contract (DESIGN_SYSTEM.md §8.2) */
+.table-scroll {
+  overflow-x: auto;
+  overflow-y: auto;
+  max-width: 100%;
+  -webkit-overflow-scrolling: touch;
+}
+
+.grand-total-cell {
+  border-top: 2px solid var(--border-strong);
+  border-bottom: 3px double var(--border-strong);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: var(--dur-base) !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Zero-RAM A4 Print / PDF Export Rules (DOCS_REFERENCE.md & DESIGN_SYSTEM.md §8.13) */
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 8mm;
+  }
+
+  html,
+  body {
+    background: var(--bg-surface) !important;
+    color: var(--text-primary) !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  thead {
+    display: table-header-group;
+  }
+
+  tfoot {
+    display: table-footer-group;
+    break-before: avoid;
+  }
+
+  tr {
+    break-inside: avoid;
+  }
+
+  .table-scroll {
+    overflow: visible !important;
+    max-height: none !important;
+  }
+}
