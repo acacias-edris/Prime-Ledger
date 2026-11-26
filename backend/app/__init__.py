@@ -1,0 +1,1 @@
+"""LedgerPrime FastAPI backend package."""

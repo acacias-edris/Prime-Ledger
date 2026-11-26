@@ -1,14 +1,8 @@
-import { useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useFieldArray, useForm, useWatch } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import {
-  AlertCircle,
-  CheckCircle2,
-  Plus,
-  Trash2,
-  XCircle,
-} from 'lucide-react'
+import { AlertCircle, CheckCircle2, Plus, Trash2, XCircle } from 'lucide-react'
 import { cn } from '../../lib/cn'
 import {
   absBigInt,
@@ -17,13 +11,13 @@ import {
   toScaledInt,
 } from '../../lib/decimal'
 import { formatCurrency } from '../../lib/format'
+import type { VoucherDTO } from '../../lib/api'
 import {
-  SYNTHETIC_LEDGERS,
   VOUCHER_TYPE_META,
   VOUCHER_TYPE_ORDER,
-  type DayBookVoucher,
   type VoucherType,
 } from '../../lib/dummyData'
+import { useCreateVoucher, useLedgers } from '../../hooks/useAccounting'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
 import { Drawer } from '../../components/ui/Drawer'
@@ -61,9 +55,9 @@ const voucherLineSchema = z
 const quickVoucherSchema = z
   .object({
     voucherDate: z.string().min(1, 'Date is required'),
-    voucherNo: z.string().trim().min(1, 'Voucher # is required').max(40),
+    voucherNo: z.string().trim().max(40).optional(),
     referenceNo: z.string().trim().max(64).optional(),
-    narration: z.string().trim().min(1, 'Narration is required').max(255),
+    narration: z.string().trim().min(1, 'Narration is required').max(500),
     lines: z.array(voucherLineSchema).min(2, 'At least 2 ledger lines are required'),
   })
   .refine(
@@ -84,25 +78,37 @@ type QuickVoucherOutput = z.output<typeof quickVoucherSchema>
 export interface QuickVoucherDrawerProps {
   open: boolean
   voucherType: VoucherType
-  nextSequenceNumber: number
   onChangeVoucherType: (type: VoucherType) => void
   onClose: () => void
-  onPostVoucher: (voucher: DayBookVoucher) => void
-}
-
-function buildVoucherNo(type: VoucherType, seq: number): string {
-  return `${VOUCHER_TYPE_META[type].prefix}${String(seq).padStart(4, '0')}`
+  onVoucherPosted: (voucher: VoucherDTO) => void
 }
 
 export function QuickVoucherDrawer({
   open,
   voucherType,
-  nextSequenceNumber,
   onChangeVoucherType,
   onClose,
-  onPostVoucher,
+  onVoucherPosted,
 }: QuickVoucherDrawerProps) {
   const meta = VOUCHER_TYPE_META[voucherType]
+  const ledgersQuery = useLedgers()
+  const createVoucher = useCreateVoucher()
+  const [serverError, setServerError] = useState<string | null>(null)
+
+  const ledgers = useMemo(() => ledgersQuery.data ?? [], [ledgersQuery.data])
+
+  const handleClose = useCallback(() => {
+    setServerError(null)
+    onClose()
+  }, [onClose])
+
+  const handleChangeVoucherType = useCallback(
+    (type: VoucherType) => {
+      setServerError(null)
+      onChangeVoucherType(type)
+    },
+    [onChangeVoucherType],
+  )
 
   const {
     register,
@@ -110,13 +116,13 @@ export function QuickVoucherDrawer({
     handleSubmit,
     reset,
     setValue,
-    formState: { errors, isSubmitting },
+    formState: { errors },
   } = useForm<QuickVoucherInput, unknown, QuickVoucherOutput>({
     resolver: zodResolver(quickVoucherSchema),
     mode: 'onChange',
     defaultValues: {
-      voucherDate: '2026-11-26',
-      voucherNo: buildVoucherNo(voucherType, nextSequenceNumber),
+      voucherDate: '2026-11-27',
+      voucherNo: '',
       referenceNo: '',
       narration: '',
       lines: [
@@ -130,33 +136,35 @@ export function QuickVoucherDrawer({
   const rawWatchedLines = useWatch({ control, name: 'lines' })
   const watchedLines = useMemo(() => rawWatchedLines ?? [], [rawWatchedLines])
 
-  // Sync voucher number & default accounts cleanly when opening or switching F4–F9 tabs
   useEffect(() => {
     if (!open) return
     const typeMeta = VOUCHER_TYPE_META[voucherType]
+    const hasCode = (code: string) => ledgers.some((l) => l.code === code)
+    const drCode = hasCode(typeMeta.defaultDebitCode)
+      ? typeMeta.defaultDebitCode
+      : ledgers[0]?.code ?? ''
+    const crCode = hasCode(typeMeta.defaultCreditCode)
+      ? typeMeta.defaultCreditCode
+      : ledgers[1]?.code ?? ''
+
     const hasAnyAmounts = watchedLines.some(
       (l) => toScaledInt(l?.debit) > 0n || toScaledInt(l?.credit) > 0n,
     )
-
     if (!hasAnyAmounts) {
       reset({
-        voucherDate: '2026-11-26',
-        voucherNo: buildVoucherNo(voucherType, nextSequenceNumber),
+        voucherDate: '2026-11-27',
+        voucherNo: '',
         referenceNo: '',
         narration: '',
         lines: [
-          { accountCode: typeMeta.defaultDebitCode, debit: '', credit: '' },
-          { accountCode: typeMeta.defaultCreditCode, debit: '', credit: '' },
+          { accountCode: drCode, debit: '', credit: '' },
+          { accountCode: crCode, debit: '', credit: '' },
         ],
       })
-    } else {
-      setValue('voucherNo', buildVoucherNo(voucherType, nextSequenceNumber), {
-        shouldValidate: true,
-      })
     }
-    // Intentionally triggers on drawer open or voucherType switch only
+    // Intentionally triggers on drawer open, voucherType switch, or initial ledgers load
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, voucherType, nextSequenceNumber])
+  }, [open, voucherType, ledgers.length])
 
   const { totalDebit, totalCredit, difference, isBalanced } = useMemo(() => {
     const dr = watchedLines.reduce((sum, ln) => sum + toScaledInt(ln?.debit), 0n)
@@ -170,64 +178,37 @@ export function QuickVoucherDrawer({
     }
   }, [watchedLines])
 
-  const ledgerByCode = useMemo(() => {
-    const map = new Map<string, string>()
-    for (const ledger of SYNTHETIC_LEDGERS) {
-      map.set(ledger.code, ledger.name)
+  const onSubmit = async (data: QuickVoucherOutput) => {
+    setServerError(null)
+    try {
+      const created = await createVoucher.mutateAsync({
+        voucher_type: voucherType,
+        voucher_date: data.voucherDate,
+        voucher_number: data.voucherNo?.trim() || null,
+        reference_no: data.referenceNo?.trim() || null,
+        narration: data.narration,
+        status: 'POSTED',
+        lines: data.lines.map((ln) => ({
+          account_code: ln.accountCode,
+          debit_amount: fromScaledInt(toScaledInt(ln.debit), 4),
+          credit_amount: fromScaledInt(toScaledInt(ln.credit), 4),
+        })),
+      })
+      reset({
+        voucherDate: '2026-11-27',
+        voucherNo: '',
+        referenceNo: '',
+        narration: '',
+        lines: [
+          { accountCode: meta.defaultDebitCode, debit: '', credit: '' },
+          { accountCode: meta.defaultCreditCode, debit: '', credit: '' },
+        ],
+      })
+      onVoucherPosted(created)
+      handleClose()
+    } catch (err) {
+      setServerError(err instanceof Error ? err.message : 'Failed to post voucher.')
     }
-    return map
-  }, [])
-
-  const onSubmit = (data: QuickVoucherOutput) => {
-    const normalizedLines = data.lines.map((ln) => ({
-      accountCode: ln.accountCode,
-      accountName: ledgerByCode.get(ln.accountCode) ?? ln.accountCode,
-      debit: fromScaledInt(toScaledInt(ln.debit), 4),
-      credit: fromScaledInt(toScaledInt(ln.credit), 4),
-    }))
-
-    const totalBase = fromScaledInt(totalDebit, 4)
-    const primaryLine = normalizedLines[0]
-    const isCreditRegisterType = voucherType === 'PURCHASE' || voucherType === 'PAYMENT'
-    const isDualSidedRegisterType = voucherType === 'JOURNAL' || voucherType === 'CONTRA'
-
-    const newVoucher: DayBookVoucher = {
-      id: `v-local-${voucherType.toLowerCase()}-${nextSequenceNumber}`,
-      voucherDate: data.voucherDate,
-      voucherNo: data.voucherNo,
-      voucherType,
-      particulars: primaryLine?.accountName ?? 'Manual Entry',
-      narration: data.narration,
-      referenceNo: data.referenceNo || undefined,
-      currency: 'INR',
-      debit: isDualSidedRegisterType
-        ? totalBase
-        : isCreditRegisterType
-          ? '0.0000'
-          : totalBase,
-      credit: isDualSidedRegisterType
-        ? totalBase
-        : isCreditRegisterType
-          ? totalBase
-          : '0.0000',
-      lifecycleStatus: 'POSTED',
-      complianceStatus: 'MATCHED',
-      complianceLabel: 'Posted · Local',
-      lines: normalizedLines,
-    }
-
-    onPostVoucher(newVoucher)
-    reset({
-      voucherDate: '2026-11-26',
-      voucherNo: buildVoucherNo(voucherType, nextSequenceNumber + 1),
-      referenceNo: '',
-      narration: '',
-      lines: [
-        { accountCode: meta.defaultDebitCode, debit: '', credit: '' },
-        { accountCode: meta.defaultCreditCode, debit: '', credit: '' },
-      ],
-    })
-    onClose()
   }
 
   const saveDisabledReason =
@@ -240,9 +221,9 @@ export function QuickVoucherDrawer({
   return (
     <Drawer
       open={open}
-      onClose={onClose}
+      onClose={handleClose}
       title={`${meta.label} Voucher Entry`}
-      subtitle={`Double-entry zero-float validation · Switch type with F4–F9 or Alt+4–9`}
+      subtitle="Live FastAPI double-entry posting · Switch type with F4–F9 or Alt+4–9"
       headerExtra={
         <div
           role="tablist"
@@ -258,7 +239,7 @@ export function QuickVoucherDrawer({
                 type="button"
                 role="tab"
                 aria-selected={active}
-                onClick={() => onChangeVoucherType(type)}
+                onClick={() => handleChangeVoucherType(type)}
                 className={cn(
                   'inline-flex h-9 items-center gap-1.5 rounded-md border px-2.5 text-[13px] font-medium transition-colors duration-[var(--dur-fast)] cursor-pointer',
                   active
@@ -277,7 +258,6 @@ export function QuickVoucherDrawer({
       }
       footer={
         <div className="space-y-3">
-          {/* Live Scaled BigInt Totals Strip */}
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border-subtle bg-canvas px-3.5 py-2.5">
             <div className="flex flex-wrap items-center gap-4 text-[13px]">
               <div>
@@ -313,17 +293,16 @@ export function QuickVoucherDrawer({
             )}
           </div>
 
-          {/* Primary Actions */}
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <Button variant="secondary" onClick={onClose}>
+            <Button variant="secondary" onClick={handleClose}>
               Cancel
             </Button>
             <Button
               type="submit"
               form={QUICK_VOUCHER_FORM_ID}
               variant="primary"
-              loading={isSubmitting}
-              disabled={!isBalanced}
+              loading={createVoucher.isPending}
+              disabled={!isBalanced || ledgersQuery.isLoading}
               title={saveDisabledReason}
               shortcut="Ctrl+Enter"
               revealShortcutOnHover
@@ -340,7 +319,16 @@ export function QuickVoucherDrawer({
         className="space-y-5"
         noValidate
       >
-        {/* Header Metadata */}
+        {serverError ? (
+          <div
+            role="alert"
+            className="flex items-start gap-2 rounded-md border border-[var(--status-danger-border)] bg-danger-bg px-3.5 py-2.5 text-[13px] font-medium text-danger"
+          >
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" strokeWidth={1.75} aria-hidden="true" />
+            <span>{serverError}</span>
+          </div>
+        ) : null}
+
         <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-3">
           <Input
             label="Voucher Date"
@@ -349,7 +337,8 @@ export function QuickVoucherDrawer({
             {...register('voucherDate')}
           />
           <Input
-            label="Voucher #"
+            label="Voucher # (Optional)"
+            placeholder="Auto-generated"
             className="tabular-mono"
             error={errors.voucherNo?.message}
             {...register('voucherNo')}
@@ -363,7 +352,6 @@ export function QuickVoucherDrawer({
           />
         </div>
 
-        {/* Dynamic Double-Entry Lines */}
         <div className="space-y-2.5">
           <div className="flex items-center justify-between">
             <h3 className="type-h3">Ledger Entries (Dr / Cr)</h3>
@@ -378,7 +366,6 @@ export function QuickVoucherDrawer({
           </div>
 
           <div className="rounded-md border border-border-subtle bg-canvas p-3 space-y-3">
-            {/* Desktop Column Header */}
             <div className="hidden sm:grid sm:grid-cols-12 sm:gap-2 px-1 text-[11px] font-semibold uppercase tracking-[0.04em] text-muted-text">
               <div className="col-span-5">Ledger Account</div>
               <div className="col-span-3 text-right">Debit (₹)</div>
@@ -402,6 +389,7 @@ export function QuickVoucherDrawer({
                     </label>
                     <select
                       id={`line-account-${index}`}
+                      disabled={ledgersQuery.isLoading}
                       aria-invalid={lineErr?.accountCode ? true : undefined}
                       {...register(`lines.${index}.accountCode`)}
                       className={cn(
@@ -409,9 +397,11 @@ export function QuickVoucherDrawer({
                         lineErr?.accountCode ? 'border-danger' : 'border-border-input',
                       )}
                     >
-                      <option value="">Select ledger...</option>
-                      {SYNTHETIC_LEDGERS.map((ledger) => (
-                        <option key={ledger.code} value={ledger.code}>
+                      <option value="">
+                        {ledgersQuery.isLoading ? 'Loading ledgers...' : 'Select ledger...'}
+                      </option>
+                      {ledgers.map((ledger) => (
+                        <option key={ledger.id} value={ledger.code}>
                           {ledger.code} · {ledger.name}
                         </option>
                       ))}
@@ -482,7 +472,7 @@ export function QuickVoucherDrawer({
           {errors.lines?.root?.message ? (
             <p
               role="alert"
-              className="flex items-center gap-1.5 rounded-md border border-danger/35 bg-danger-bg px-3 py-2 text-[12px] font-medium text-danger"
+              className="flex items-center gap-1.5 rounded-md border border-[var(--status-danger-border)] bg-danger-bg px-3 py-2 text-[12px] font-medium text-danger"
             >
               <AlertCircle className="h-4 w-4 shrink-0" strokeWidth={1.75} />
               <span>{errors.lines.root.message}</span>
@@ -490,7 +480,6 @@ export function QuickVoucherDrawer({
           ) : null}
         </div>
 
-        {/* Narration */}
         <Input
           label="Narration"
           placeholder="e.g. Being payment made via NEFT against invoice #..."

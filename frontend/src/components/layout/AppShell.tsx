@@ -1,30 +1,35 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   BarChart3,
+  BookOpen,
   Bot,
   Building2,
   ChevronDown,
   FileCheck2,
+  FileSpreadsheet,
   FileText,
   HelpCircle,
   Landmark,
   LayoutDashboard,
+  ListTree,
   Menu,
   Moon,
   Package,
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
+  Scale,
   Search,
   Sun,
+  TrendingUp,
   X,
 } from 'lucide-react'
 import { cn } from '../../lib/cn'
+import type { CompanyContextDTO } from '../../lib/api'
 import {
   COMPANY_PROFILE,
   VOUCHER_TYPE_META,
   VOUCHER_TYPE_ORDER,
-  WORKSPACE_NAV_META,
   type VoucherType,
 } from '../../lib/dummyData'
 import type { ThemeMode } from '../../hooks/useTheme'
@@ -33,28 +38,88 @@ import { Kbd } from '../ui/Kbd'
 export interface NavItem {
   id: string
   label: string
+  section: 'core' | 'upcoming'
   milestoneTag?: string
   icon: ReactNode
 }
 
-const NAV_ICONS: Record<string, ReactNode> = {
-  dashboard: <LayoutDashboard className="h-[18px] w-[18px] shrink-0" strokeWidth={1.75} aria-hidden="true" />,
-  vouchers: <FileText className="h-[18px] w-[18px] shrink-0" strokeWidth={1.75} aria-hidden="true" />,
-  reports: <BarChart3 className="h-[18px] w-[18px] shrink-0" strokeWidth={1.75} aria-hidden="true" />,
-  inventory: <Package className="h-[18px] w-[18px] shrink-0" strokeWidth={1.75} aria-hidden="true" />,
-  banking: <Landmark className="h-[18px] w-[18px] shrink-0" strokeWidth={1.75} aria-hidden="true" />,
-  tax: <FileCheck2 className="h-[18px] w-[18px] shrink-0" strokeWidth={1.75} aria-hidden="true" />,
-  automation: <Bot className="h-[18px] w-[18px] shrink-0" strokeWidth={1.75} aria-hidden="true" />,
-}
-
-const NAV_ITEMS: NavItem[] = WORKSPACE_NAV_META.map((item) => ({
-  ...item,
-  icon: NAV_ICONS[item.id] ?? NAV_ICONS.dashboard,
-}))
+const APP_NAV_ITEMS: readonly NavItem[] = [
+  {
+    id: 'dashboard',
+    label: 'Dashboard',
+    section: 'core',
+    icon: <LayoutDashboard className="h-[18px] w-[18px] shrink-0" strokeWidth={1.75} aria-hidden="true" />,
+  },
+  {
+    id: 'coa',
+    label: 'Chart of Accounts',
+    section: 'core',
+    icon: <ListTree className="h-[18px] w-[18px] shrink-0" strokeWidth={1.75} aria-hidden="true" />,
+  },
+  {
+    id: 'daybook',
+    label: 'Day Book',
+    section: 'core',
+    icon: <FileText className="h-[18px] w-[18px] shrink-0" strokeWidth={1.75} aria-hidden="true" />,
+  },
+  {
+    id: 'ledger-statement',
+    label: 'Ledger Statement',
+    section: 'core',
+    icon: <BookOpen className="h-[18px] w-[18px] shrink-0" strokeWidth={1.75} aria-hidden="true" />,
+  },
+  {
+    id: 'trial-balance',
+    label: 'Trial Balance',
+    section: 'core',
+    icon: <Scale className="h-[18px] w-[18px] shrink-0" strokeWidth={1.75} aria-hidden="true" />,
+  },
+  {
+    id: 'profit-loss',
+    label: 'Profit & Loss',
+    section: 'core',
+    icon: <TrendingUp className="h-[18px] w-[18px] shrink-0" strokeWidth={1.75} aria-hidden="true" />,
+  },
+  {
+    id: 'balance-sheet',
+    label: 'Balance Sheet',
+    section: 'core',
+    icon: <FileSpreadsheet className="h-[18px] w-[18px] shrink-0" strokeWidth={1.75} aria-hidden="true" />,
+  },
+  {
+    id: 'inventory',
+    label: 'Inventory',
+    section: 'upcoming',
+    milestoneTag: 'M3',
+    icon: <Package className="h-[18px] w-[18px] shrink-0" strokeWidth={1.75} aria-hidden="true" />,
+  },
+  {
+    id: 'banking',
+    label: 'Banking & BRS',
+    section: 'upcoming',
+    milestoneTag: 'M4',
+    icon: <Landmark className="h-[18px] w-[18px] shrink-0" strokeWidth={1.75} aria-hidden="true" />,
+  },
+  {
+    id: 'tax',
+    label: 'GST & Tax',
+    section: 'upcoming',
+    milestoneTag: 'M5',
+    icon: <FileCheck2 className="h-[18px] w-[18px] shrink-0" strokeWidth={1.75} aria-hidden="true" />,
+  },
+  {
+    id: 'automation',
+    label: 'Automation',
+    section: 'upcoming',
+    milestoneTag: 'M7',
+    icon: <Bot className="h-[18px] w-[18px] shrink-0" strokeWidth={1.75} aria-hidden="true" />,
+  },
+]
 
 export interface AppShellProps {
   activeNav: string
   onSelectNav: (id: string) => void
+  company?: CompanyContextDTO
   theme: ThemeMode
   onToggleTheme: () => void
   onOpenCommandPalette: () => void
@@ -68,6 +133,7 @@ export interface AppShellProps {
 export function AppShell({
   activeNav,
   onSelectNav,
+  company,
   theme,
   onToggleTheme,
   onOpenCommandPalette,
@@ -81,6 +147,13 @@ export function AppShell({
   const [splitMenuOpen, setSplitMenuOpen] = useState(false)
   const splitMenuRef = useRef<HTMLDivElement>(null)
 
+  const companyName = company?.legal_name ?? COMPANY_PROFILE.legalName
+  const fyLabel = company?.active_fiscal_year.label ?? COMPANY_PROFILE.fiscalYear
+  const gstin = company?.gstin ?? COMPANY_PROFILE.gstin
+  const stateLabel = company
+    ? `${company.state_code} · ${company.country_code} (${company.base_currency})`
+    : COMPANY_PROFILE.stateLabel
+
   useEffect(() => {
     if (!splitMenuOpen) return
     const handleClickOutside = (event: MouseEvent) => {
@@ -92,43 +165,64 @@ export function AppShell({
     return () => window.removeEventListener('mousedown', handleClickOutside)
   }, [splitMenuOpen])
 
-  const renderNavList = (isMobile: boolean) => (
-    <nav aria-label="Primary Workspace Navigation" className="flex-1 space-y-1 px-2.5 py-3">
-      {NAV_ITEMS.map((item) => {
-        const isActive = item.id === activeNav
-        const showLabel = isMobile || !sidebarCollapsed
+  const coreNav = APP_NAV_ITEMS.filter((i) => i.section === 'core')
+  const upcomingNav = APP_NAV_ITEMS.filter((i) => i.section === 'upcoming')
 
-        return (
-          <button
-            key={item.id}
-            type="button"
-            onClick={() => {
-              onSelectNav(item.id)
-              if (isMobile) onSetMobileNavOpen(false)
-            }}
-            title={!showLabel ? item.label : undefined}
-            aria-current={isActive ? 'page' : undefined}
-            className={cn(
-              'flex h-[var(--control-h)] w-full items-center rounded-md px-3 text-[14px] font-medium transition-colors duration-[var(--dur-fast)] ease-[var(--ease-out)] cursor-pointer',
-              showLabel ? 'justify-start gap-2.5' : 'justify-center',
-              isActive
-                ? 'bg-muted text-primary-text shadow-[inset_3px_0_0_0_var(--accent-primary)]'
-                : 'text-muted-text hover:bg-row-hover hover:text-primary-text',
-            )}
-          >
-            <span className={cn(isActive ? 'text-accent' : 'text-muted-text')}>
-              {item.icon}
-            </span>
-            {showLabel ? <span className="truncate">{item.label}</span> : null}
-          </button>
-        )
-      })}
+  const renderNavButton = (item: NavItem, isMobile: boolean) => {
+    const isActive = item.id === activeNav
+    const showLabel = isMobile || !sidebarCollapsed
+
+    return (
+      <button
+        key={item.id}
+        type="button"
+        onClick={() => {
+          onSelectNav(item.id)
+          if (isMobile) onSetMobileNavOpen(false)
+        }}
+        title={!showLabel ? item.label : undefined}
+        aria-current={isActive ? 'page' : undefined}
+        className={cn(
+          'flex h-[var(--control-h)] w-full items-center rounded-md px-3 text-[14px] font-medium transition-colors duration-[var(--dur-fast)] ease-[var(--ease-out)] cursor-pointer',
+          showLabel ? 'justify-between gap-2' : 'justify-center',
+          isActive
+            ? 'bg-muted text-primary-text shadow-[inset_3px_0_0_0_var(--accent-primary)]'
+            : 'text-muted-text hover:bg-row-hover hover:text-primary-text',
+        )}
+      >
+        <span className="flex min-w-0 items-center gap-2.5">
+          <span className={cn(isActive ? 'text-accent' : 'text-muted-text')}>
+            {item.icon}
+          </span>
+          {showLabel ? <span className="truncate">{item.label}</span> : null}
+        </span>
+        {showLabel && item.milestoneTag ? (
+          <span className="code-mono text-[10px] font-semibold uppercase text-disabled-text">
+            {item.milestoneTag}
+          </span>
+        ) : null}
+      </button>
+    )
+  }
+
+  const renderNavList = (isMobile: boolean) => (
+    <nav aria-label="Primary Workspace Navigation" className="flex-1 overflow-y-auto px-2.5 py-3">
+      <div className="space-y-1">{coreNav.map((item) => renderNavButton(item, isMobile))}</div>
+      <div className="my-3 border-t border-border-subtle" />
+      {(isMobile || !sidebarCollapsed) ? (
+        <p className="mb-1.5 px-3 text-[11px] font-semibold uppercase tracking-[0.05em] text-disabled-text">
+          Upcoming Modules
+        </p>
+      ) : null}
+      <div className="space-y-1">
+        {upcomingNav.map((item) => renderNavButton(item, isMobile))}
+      </div>
     </nav>
   )
 
   return (
     <div className="min-h-screen bg-canvas text-primary-text flex">
-      {/* Desktop Collapsible Sidebar (240px expanded / 68px collapsed) */}
+      {/* Desktop Collapsible Sidebar */}
       <aside
         className={cn(
           'hidden lg:flex lg:flex-col lg:shrink-0 border-r border-border-subtle bg-chrome transition-[width] duration-[var(--dur-base)] ease-[var(--ease-out)] print:hidden',
@@ -146,7 +240,7 @@ export function AppShell({
                   LedgerPrime
                 </p>
                 <p className="truncate font-mono text-[11px] text-muted-text">
-                  v1.0 · Books
+                  v0.2 · Live Books
                 </p>
               </div>
             </div>
@@ -186,21 +280,20 @@ export function AppShell({
         {!sidebarCollapsed ? (
           <div className="border-t border-border-subtle p-3.5">
             <div className="rounded-md border border-border-subtle bg-surface p-3">
-              <p className="type-xs uppercase text-muted-text">
-                GSTIN · Synthetic
-              </p>
+              <div className="flex items-center justify-between gap-2">
+                <p className="type-xs uppercase text-muted-text">GSTIN · Synthetic</p>
+                <BarChart3 className="h-3.5 w-3.5 text-muted-text" strokeWidth={1.75} aria-hidden="true" />
+              </div>
               <p className="mt-0.5 code-mono text-[12px] font-medium text-primary-text">
-                {COMPANY_PROFILE.gstin}
+                {gstin}
               </p>
-              <p className="mt-1 text-[11px] text-muted-text">
-                {COMPANY_PROFILE.stateLabel}
-              </p>
+              <p className="mt-1 text-[11px] text-muted-text">{stateLabel}</p>
             </div>
           </div>
         ) : null}
       </aside>
 
-      {/* Mobile Slide-Over Sidebar Drawer (390px viewport safe) */}
+      {/* Mobile Slide-Over Sidebar Drawer */}
       {mobileNavOpen ? (
         <div
           className="fixed inset-0 z-[var(--z-drawer)] flex lg:hidden print:hidden"
@@ -250,11 +343,9 @@ export function AppShell({
               </button>
 
               <div>
-                <p className="text-[12px] font-semibold text-primary-text">
-                  {COMPANY_PROFILE.legalName}
-                </p>
+                <p className="text-[12px] font-semibold text-primary-text">{companyName}</p>
                 <p className="mt-0.5 code-mono text-[11px] text-muted-text">
-                  {COMPANY_PROFILE.fiscalYear} · {COMPANY_PROFILE.gstin}
+                  {fyLabel} · {gstin}
                 </p>
               </div>
             </div>
@@ -276,22 +367,24 @@ export function AppShell({
               <Menu className="h-5 w-5" strokeWidth={1.75} />
             </button>
 
-            {/* Company & Fiscal Year Selector Pill */}
             <div className="flex min-w-0 min-h-[40px] items-center gap-2 rounded-md border border-border-input bg-surface px-2.5 py-1.5">
-              <Building2 className="hidden sm:block h-4 w-4 shrink-0 text-accent" strokeWidth={1.75} aria-hidden="true" />
+              <Building2
+                className="hidden sm:block h-4 w-4 shrink-0 text-accent"
+                strokeWidth={1.75}
+                aria-hidden="true"
+              />
               <div className="min-w-0 flex flex-col sm:flex-row sm:items-center sm:gap-2">
                 <span className="truncate text-[15px] sm:text-[14px] font-semibold leading-tight text-primary-text max-w-[160px] sm:max-w-[260px] md:max-w-none">
-                  {COMPANY_PROFILE.legalName}
+                  {companyName}
                 </span>
                 <span className="shrink-0 code-mono text-[11px] font-semibold text-muted-text sm:rounded-sm sm:border sm:border-border-subtle sm:bg-muted sm:px-1.5 sm:py-0.5">
-                  {COMPANY_PROFILE.fiscalYear}
+                  {fyLabel}
                 </span>
               </div>
             </div>
           </div>
 
           <div className="flex shrink-0 items-center gap-2">
-            {/* Alt+G Go-To Search Trigger */}
             <button
               type="button"
               onClick={onOpenCommandPalette}
@@ -303,7 +396,6 @@ export function AppShell({
               <Kbd className="hidden md:inline-flex">Alt+G</Kbd>
             </button>
 
-            {/* Shortcut Sheet (?) Trigger — Desktop */}
             <button
               type="button"
               onClick={onOpenShortcutSheet}
@@ -314,7 +406,6 @@ export function AppShell({
               <HelpCircle className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
             </button>
 
-            {/* Light / Dark Theme Toggle — Desktop (in Mobile Drawer below lg) */}
             <button
               type="button"
               onClick={onToggleTheme}
@@ -329,7 +420,6 @@ export function AppShell({
               )}
             </button>
 
-            {/* Mobile + Icon CTA (44x44) */}
             <button
               type="button"
               onClick={() => onOpenVoucher('SALES')}
@@ -339,7 +429,6 @@ export function AppShell({
               <Plus className="h-5 w-5" strokeWidth={2} aria-hidden="true" />
             </button>
 
-            {/* Desktop Split-Button: New Voucher (F8) + Dropdown (F4–F9) */}
             <div ref={splitMenuRef} className="relative hidden sm:inline-flex">
               <button
                 type="button"
@@ -391,30 +480,28 @@ export function AppShell({
           </div>
         </header>
 
-        {/* Print-Only Formal Statutory Letterhead */}
+        {/* Print-Only Statutory Letterhead */}
         <div className="hidden print:block border-b-2 border-border-strong px-2 pb-3 mb-4">
           <div className="flex items-baseline justify-between">
             <div>
-              <h1 className="text-[18px] font-bold text-primary-text">
-                {COMPANY_PROFILE.legalName}
-              </h1>
+              <h1 className="text-[18px] font-bold text-primary-text">{companyName}</h1>
               <p className="code-mono text-[12px] text-muted-text">
-                GSTIN: {COMPANY_PROFILE.gstin} · {COMPANY_PROFILE.stateLabel}
+                GSTIN: {gstin} · {stateLabel}
               </p>
             </div>
             <div className="text-right code-mono text-[12px] text-muted-text">
-              <p>{COMPANY_PROFILE.fiscalYear}</p>
-              <p>Period: {COMPANY_PROFILE.periodLabel}</p>
+              <p>{fyLabel}</p>
+              <p>Generated from LedgerPrime</p>
             </div>
           </div>
         </div>
 
-        {/* Workspace Canvas (Max 1360px, LEFT-aligned 24px from sidebar on desktop) */}
+        {/* Workspace Canvas */}
         <main className="w-full max-w-[1360px] flex-1 px-4 py-4 pb-24 md:px-6 md:py-6 md:pb-6">
           {children}
         </main>
 
-        {/* Mobile Sticky Bottom Action Bar (64px + safe-area) */}
+        {/* Mobile Sticky Bottom Action Bar */}
         <div className="fixed inset-x-0 bottom-0 z-[var(--z-topbar)] flex items-center gap-2 border-t border-border-subtle bg-chrome px-4 py-2 pb-[calc(8px+env(safe-area-inset-bottom))] md:hidden print:hidden">
           <button
             type="button"

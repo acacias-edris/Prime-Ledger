@@ -1,11 +1,8 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { CheckCircle2, Construction } from 'lucide-react'
-import {
-  INITIAL_VOUCHERS,
-  WORKSPACE_NAV_META,
-  type DayBookVoucher,
-  type VoucherType,
-} from './lib/dummyData'
+import type { VoucherDTO } from './lib/api'
+import { WORKSPACE_NAV_META, type VoucherType } from './lib/dummyData'
+import { useCompanyContext, useDayBook, useLedgers } from './hooks/useAccounting'
 import { useKeymap } from './hooks/useKeymap'
 import { useTheme } from './hooks/useTheme'
 import { AppShell } from './components/layout/AppShell'
@@ -19,6 +16,12 @@ import {
   QUICK_VOUCHER_FORM_ID,
   QuickVoucherDrawer,
 } from './features/dashboard/QuickVoucherDrawer'
+import { ChartOfAccountsView } from './features/accounting/ChartOfAccountsView'
+import { DayBookView } from './features/accounting/DayBookView'
+import { LedgerStatementView } from './features/accounting/LedgerStatementView'
+import { TrialBalanceView } from './features/accounting/TrialBalanceView'
+import { ProfitLossView } from './features/accounting/ProfitLossView'
+import { BalanceSheetView } from './features/accounting/BalanceSheetView'
 
 export default function App() {
   const { theme, toggleTheme } = useTheme()
@@ -31,9 +34,16 @@ export default function App() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [drawerVoucherType, setDrawerVoucherType] = useState<VoucherType>('SALES')
 
-  const [vouchers, setVouchers] = useState<DayBookVoucher[]>(INITIAL_VOUCHERS)
-  const [selectedVoucherId, setSelectedVoucherId] = useState<string | null>(null)
+  const [selectedVoucherId, setSelectedVoucherId] = useState<number | null>(null)
+  const [selectedLedgerId, setSelectedLedgerId] = useState<number | null>(null)
   const [toastMessage, setToastMessage] = useState<string | null>(null)
+
+  const companyQuery = useCompanyContext()
+  const dayBookQuery = useDayBook()
+  const ledgersQuery = useLedgers()
+
+  const vouchers = useMemo(() => dayBookQuery.data?.vouchers ?? [], [dayBookQuery.data])
+  const ledgers = useMemo(() => ledgersQuery.data ?? [], [ledgersQuery.data])
 
   useEffect(() => {
     if (!toastMessage) return
@@ -70,7 +80,7 @@ export default function App() {
       setDrawerOpen(false)
     } else if (mobileNavOpen) {
       setMobileNavOpen(false)
-    } else if (selectedVoucherId) {
+    } else if (selectedVoucherId !== null) {
       setSelectedVoucherId(null)
     }
   }, [shortcutSheetOpen, paletteOpen, drawerOpen, mobileNavOpen, selectedVoucherId])
@@ -89,44 +99,67 @@ export default function App() {
     isFormSubmitEnabled: drawerOpen,
   })
 
-  const handlePostVoucher = useCallback((newVoucher: DayBookVoucher) => {
-    setVouchers((prev) => [newVoucher, ...prev])
-    setActiveNav('dashboard')
-    setSelectedVoucherId(newVoucher.id)
-    setToastMessage(`Posted ${newVoucher.voucherNo} (${newVoucher.voucherType})`)
+  const handleVoucherPosted = useCallback((created: VoucherDTO) => {
+    setSelectedVoucherId(created.id)
+    setToastMessage(`Posted ${created.voucher_number} (${created.voucher_type})`)
   }, [])
 
-  const nextSequenceNumber =
-    vouchers.filter((v) => v.voucherType === drawerVoucherType).length + 43
+  const handleOpenLedgerStatement = useCallback((ledgerId: number) => {
+    setSelectedLedgerId(ledgerId)
+    setActiveNav('ledger-statement')
+  }, [])
 
   const activeNavMeta = WORKSPACE_NAV_META.find((n) => n.id === activeNav)
 
-  return (
-    <>
-      <AppShell
-        activeNav={activeNav}
-        onSelectNav={setActiveNav}
-        theme={theme}
-        onToggleTheme={toggleTheme}
-        onOpenCommandPalette={() => setPaletteOpen(true)}
-        onOpenVoucher={handleOpenVoucher}
-        onOpenShortcutSheet={() => setShortcutSheetOpen(true)}
-        mobileNavOpen={mobileNavOpen}
-        onSetMobileNavOpen={setMobileNavOpen}
-      >
-        {activeNav === 'dashboard' ? (
+  const renderWorkspace = () => {
+    switch (activeNav) {
+      case 'dashboard':
+        return (
           <FinancialCommandPage
-            vouchers={vouchers}
             selectedVoucherId={selectedVoucherId}
             onSelectVoucher={(v) => setSelectedVoucherId(v?.id ?? null)}
             onOpenVoucher={handleOpenVoucher}
+            onOpenLedgerStatement={handleOpenLedgerStatement}
+            onNavigateReport={setActiveNav}
+            onNotify={setToastMessage}
           />
-        ) : (
+        )
+      case 'coa':
+        return (
+          <ChartOfAccountsView
+            onOpenLedgerStatement={handleOpenLedgerStatement}
+            onNotify={setToastMessage}
+          />
+        )
+      case 'daybook':
+        return (
+          <DayBookView
+            onOpenVoucher={handleOpenVoucher}
+            onOpenLedgerStatement={handleOpenLedgerStatement}
+            onNotify={setToastMessage}
+          />
+        )
+      case 'ledger-statement':
+        return (
+          <LedgerStatementView
+            selectedLedgerId={selectedLedgerId}
+            onSelectLedger={setSelectedLedgerId}
+            onBackToCoa={() => setActiveNav('coa')}
+          />
+        )
+      case 'trial-balance':
+        return <TrialBalanceView onOpenLedgerStatement={handleOpenLedgerStatement} />
+      case 'profit-loss':
+        return <ProfitLossView onOpenLedgerStatement={handleOpenLedgerStatement} />
+      case 'balance-sheet':
+        return <BalanceSheetView onOpenLedgerStatement={handleOpenLedgerStatement} />
+      default:
+        return (
           <Card className="my-4">
             <EmptyState
               icon={<Construction className="h-5 w-5" strokeWidth={1.75} />}
               title={`${activeNavMeta?.label ?? 'Workspace'} — Scheduled for ${activeNavMeta?.milestoneTag ?? 'Upcoming Milestone'}`}
-              description="Milestone 1 (Visual North Star) locks the design system, UI primitives, Tally keyboard engine, and Financial Command Center before wiring FastAPI and secondary workspaces."
+              description="Milestone 2 completes the live double-entry FastAPI backend, Chart of Accounts, Day Book, Ledger Statements, Trial Balance, P&L, and Balance Sheet."
               action={
                 <div className="flex flex-wrap items-center justify-center gap-2">
                   <Button variant="primary" onClick={() => setActiveNav('dashboard')}>
@@ -137,30 +170,49 @@ export default function App() {
                     onClick={() => handleOpenVoucher('SALES')}
                     shortcut="F8"
                   >
-                    Test Quick Voucher
+                    New Voucher
                   </Button>
                 </div>
               }
             />
           </Card>
-        )}
+        )
+    }
+  }
+
+  return (
+    <>
+      <AppShell
+        activeNav={activeNav}
+        onSelectNav={setActiveNav}
+        company={companyQuery.data}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+        onOpenCommandPalette={() => setPaletteOpen(true)}
+        onOpenVoucher={handleOpenVoucher}
+        onOpenShortcutSheet={() => setShortcutSheetOpen(true)}
+        mobileNavOpen={mobileNavOpen}
+        onSetMobileNavOpen={setMobileNavOpen}
+      >
+        {renderWorkspace()}
       </AppShell>
 
       <QuickVoucherDrawer
         open={drawerOpen}
         voucherType={drawerVoucherType}
-        nextSequenceNumber={nextSequenceNumber}
         onChangeVoucherType={setDrawerVoucherType}
         onClose={() => setDrawerOpen(false)}
-        onPostVoucher={handlePostVoucher}
+        onVoucherPosted={handleVoucherPosted}
       />
 
       <CommandPalette
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
         vouchers={vouchers}
+        ledgers={ledgers}
         onOpenVoucher={handleOpenVoucher}
         onSelectNav={setActiveNav}
+        onSelectLedger={handleOpenLedgerStatement}
         onSelectVoucher={(v) => {
           setActiveNav('dashboard')
           setSelectedVoucherId(v.id)
@@ -172,7 +224,6 @@ export default function App() {
         onClose={() => setShortcutSheetOpen(false)}
       />
 
-      {/* Non-intrusive Confirmation Toast */}
       {toastMessage ? (
         <div
           role="status"

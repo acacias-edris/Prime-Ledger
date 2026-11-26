@@ -11,11 +11,10 @@ import {
   Wallet,
 } from 'lucide-react'
 import { cn } from '../../lib/cn'
+import type { ApiVoucherType, LedgerDTO, VoucherDTO } from '../../lib/api'
 import {
-  SYNTHETIC_LEDGERS,
   VOUCHER_TYPE_META,
   VOUCHER_TYPE_ORDER,
-  type DayBookVoucher,
   type VoucherType,
 } from '../../lib/dummyData'
 import { formatCurrency } from '../../lib/format'
@@ -24,15 +23,17 @@ import { Kbd } from './Kbd'
 export interface CommandPaletteProps {
   open: boolean
   onClose: () => void
-  vouchers: DayBookVoucher[]
+  vouchers: VoucherDTO[]
+  ledgers: LedgerDTO[]
   onOpenVoucher: (type: VoucherType) => void
   onSelectNav: (navId: string) => void
-  onSelectVoucher: (voucher: DayBookVoucher) => void
+  onSelectLedger: (ledgerId: number) => void
+  onSelectVoucher: (voucher: VoucherDTO) => void
 }
 
 interface PaletteItem {
   id: string
-  group: 'Quick Vouchers' | 'Workspaces' | 'Ledgers' | 'Recent Vouchers'
+  group: 'Quick Vouchers' | 'Reports & Workspaces' | 'Ledgers' | 'Recent Vouchers'
   icon: ReactNode
   label: string
   meta: string
@@ -41,16 +42,16 @@ interface PaletteItem {
 }
 
 const WORKSPACE_COMMANDS = [
-  { id: 'dashboard', label: 'Financial Command Center', meta: 'Dashboard · Active' },
-  { id: 'vouchers', label: 'Vouchers & Day Book', meta: 'Workspace · Register' },
-  { id: 'reports', label: 'Trial Balance, P&L & Balance Sheet', meta: 'Workspace · Reports' },
-  { id: 'inventory', label: 'Inventory & FIFO Godowns', meta: 'Workspace · Stock' },
-  { id: 'banking', label: 'Banking & BRS Workbench', meta: 'Workspace · Recon' },
-  { id: 'tax', label: 'GST Returns (GSTR-1/2B/3B) & TDS', meta: 'Workspace · Compliance' },
-  { id: 'automation', label: 'Rules, Recurring & OCR Inbox', meta: 'Workspace · Automation' },
+  { id: 'dashboard', label: 'Financial Command Center', meta: 'Dashboard' },
+  { id: 'coa', label: 'Chart of Accounts (28 Tally Groups)', meta: 'Masters · Live' },
+  { id: 'daybook', label: 'Day Book & Voucher Register', meta: 'Register · Live' },
+  { id: 'ledger-statement', label: 'Ledger Account Statement', meta: 'Running Balance' },
+  { id: 'trial-balance', label: 'Trial Balance', meta: 'Dr == Cr Proof' },
+  { id: 'profit-loss', label: 'Profit & Loss Statement', meta: 'Trading + P&L' },
+  { id: 'balance-sheet', label: 'Balance Sheet', meta: 'Assets == Liab + Eq' },
 ]
 
-function getVoucherIcon(type: VoucherType): ReactNode {
+function getVoucherIcon(type: ApiVoucherType): ReactNode {
   switch (type) {
     case 'CONTRA':
       return <ArrowLeftRight className="h-4 w-4 text-accent" strokeWidth={1.75} aria-hidden="true" />
@@ -58,41 +59,29 @@ function getVoucherIcon(type: VoucherType): ReactNode {
       return <Wallet className="h-4 w-4 text-accent" strokeWidth={1.75} aria-hidden="true" />
     case 'RECEIPT':
       return <Receipt className="h-4 w-4 text-accent" strokeWidth={1.75} aria-hidden="true" />
-    case 'JOURNAL':
-      return <FileText className="h-4 w-4 text-accent" strokeWidth={1.75} aria-hidden="true" />
     case 'SALES':
+    case 'CREDIT_NOTE':
       return <ArrowUpRight className="h-4 w-4 text-accent" strokeWidth={1.75} aria-hidden="true" />
     case 'PURCHASE':
+    case 'DEBIT_NOTE':
       return <ShoppingBag className="h-4 w-4 text-accent" strokeWidth={1.75} aria-hidden="true" />
+    default:
+      return <FileText className="h-4 w-4 text-accent" strokeWidth={1.75} aria-hidden="true" />
   }
 }
 
-export function CommandPalette({
-  open,
-  onClose,
-  vouchers,
-  onOpenVoucher,
-  onSelectNav,
-  onSelectVoucher,
-}: CommandPaletteProps) {
-  if (!open) return null
-
-  return (
-    <CommandPaletteDialog
-      onClose={onClose}
-      vouchers={vouchers}
-      onOpenVoucher={onOpenVoucher}
-      onSelectNav={onSelectNav}
-      onSelectVoucher={onSelectVoucher}
-    />
-  )
+export function CommandPalette(props: CommandPaletteProps) {
+  if (!props.open) return null
+  return <CommandPaletteDialog {...props} />
 }
 
 function CommandPaletteDialog({
   onClose,
   vouchers,
+  ledgers,
   onOpenVoucher,
   onSelectNav,
+  onSelectLedger,
   onSelectVoucher,
 }: Omit<CommandPaletteProps, 'open'>) {
   const [query, setQuery] = useState('')
@@ -102,9 +91,7 @@ function CommandPaletteDialog({
   const navMethodRef = useRef<'keyboard' | 'mouse'>('keyboard')
 
   useEffect(() => {
-    const rafId = window.requestAnimationFrame(() => {
-      inputRef.current?.focus()
-    })
+    const rafId = window.requestAnimationFrame(() => inputRef.current?.focus())
     return () => window.cancelAnimationFrame(rafId)
   }, [])
 
@@ -123,14 +110,12 @@ function CommandPaletteDialog({
   const allItems = useMemo<PaletteItem[]>(() => {
     const voucherActions: PaletteItem[] = VOUCHER_TYPE_ORDER.map((type) => {
       const meta = VOUCHER_TYPE_META[type]
-      const seq = vouchers.filter((v) => v.voucherType === type).length + 43
-      const nextNo = `${meta.prefix}${String(seq).padStart(4, '0')}`
       return {
         id: `action-${type}`,
         group: 'Quick Vouchers',
         icon: getVoucherIcon(type),
         label: `New ${meta.label} Voucher`,
-        meta: nextNo,
+        meta: 'Auto-numbered',
         shortcut: meta.shortKey,
         onExecute: () => {
           onClose()
@@ -141,7 +126,7 @@ function CommandPaletteDialog({
 
     const navItems: PaletteItem[] = WORKSPACE_COMMANDS.map((ws) => ({
       id: `nav-${ws.id}`,
-      group: 'Workspaces',
+      group: 'Reports & Workspaces',
       icon: <Landmark className="h-4 w-4 text-muted-text" strokeWidth={1.75} aria-hidden="true" />,
       label: ws.label,
       meta: ws.meta,
@@ -151,35 +136,32 @@ function CommandPaletteDialog({
       },
     }))
 
-    const ledgerItems: PaletteItem[] = SYNTHETIC_LEDGERS.slice(0, 8).map((l) => ({
-      id: `ledger-${l.code}`,
+    const ledgerItems: PaletteItem[] = ledgers.map((l) => ({
+      id: `ledger-${l.id}`,
       group: 'Ledgers',
       icon: <BookOpen className="h-4 w-4 text-muted-text" strokeWidth={1.75} aria-hidden="true" />,
       label: `${l.code} · ${l.name}`,
-      meta: `${l.group} (${l.currency})`,
+      meta: `${formatCurrency(l.closing_balance)} ${l.closing_dr_cr === 'DR' ? 'Dr' : 'Cr'}`,
       onExecute: () => {
         onClose()
-        onSelectNav('reports')
+        onSelectLedger(l.id)
       },
     }))
 
-    const recentVoucherItems: PaletteItem[] = vouchers.slice(0, 6).map((v) => {
-      const amount = v.debit !== '0.0000' ? v.debit : v.credit
-      return {
-        id: `voucher-${v.id}`,
-        group: 'Recent Vouchers',
-        icon: getVoucherIcon(v.voucherType),
-        label: v.particulars,
-        meta: `${v.voucherNo} · ${formatCurrency(amount, { currency: 'INR' })}`,
-        onExecute: () => {
-          onClose()
-          onSelectVoucher(v)
-        },
-      }
-    })
+    const recentVoucherItems: PaletteItem[] = vouchers.slice(0, 8).map((v) => ({
+      id: `voucher-${v.id}`,
+      group: 'Recent Vouchers',
+      icon: getVoucherIcon(v.voucher_type),
+      label: v.particulars,
+      meta: `${v.voucher_number} · ${formatCurrency(v.total_debit)}`,
+      onExecute: () => {
+        onClose()
+        onSelectVoucher(v)
+      },
+    }))
 
     return [...voucherActions, ...navItems, ...ledgerItems, ...recentVoucherItems]
-  }, [vouchers, onClose, onOpenVoucher, onSelectNav, onSelectVoucher])
+  }, [vouchers, ledgers, onClose, onOpenVoucher, onSelectNav, onSelectLedger, onSelectVoucher])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -216,11 +198,7 @@ function CommandPaletteDialog({
       aria-modal="true"
       aria-label="Go-To Command Palette"
     >
-      <div
-        className="fixed inset-0 bg-backdrop"
-        onClick={onClose}
-        aria-hidden="true"
-      />
+      <div className="fixed inset-0 bg-backdrop" onClick={onClose} aria-hidden="true" />
 
       <div className="relative z-10 w-full max-w-[640px] overflow-hidden rounded-lg border border-border-strong bg-raised shadow-md">
         <div className="flex h-[52px] items-center gap-3 border-b border-border-subtle px-4">
@@ -235,7 +213,7 @@ function CommandPaletteDialog({
               setActiveIndex(0)
             }}
             onKeyDown={handleKeyDown}
-            placeholder="Go To voucher, ledger, report, or shortcut (e.g. Sales, HDFC, GSTR-1)..."
+            placeholder="Go To voucher, ledger, Trial Balance, P&L, Balance Sheet..."
             aria-label="Go-To command search"
             className="w-full bg-transparent text-[15px] font-normal text-primary-text placeholder:text-disabled-text focus:outline-none"
           />
@@ -305,7 +283,7 @@ function CommandPaletteDialog({
               <Kbd>Enter</Kbd> Open
             </span>
           </div>
-          <span>Tally Go-To Engine · Alt+G</span>
+          <span>Tally Go-To Engine · Live FastAPI</span>
         </div>
       </div>
     </div>

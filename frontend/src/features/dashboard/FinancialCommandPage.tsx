@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import {
   AlertTriangle,
+  Ban,
   CalendarClock,
   CheckCircle2,
   Clock,
@@ -8,13 +9,15 @@ import {
   Info,
   Landmark,
   Printer,
+  RefreshCw,
+  RotateCcw,
   Rows3,
   Rows4,
   ShieldCheck,
   TrendingUp,
 } from 'lucide-react'
 import { cn } from '../../lib/cn'
-import { toScaledInt } from '../../lib/decimal'
+import type { ApiVoucherStatus, ApiVoucherType, DrCr, VoucherDTO } from '../../lib/api'
 import {
   formatBookAmountCell,
   formatCurrency,
@@ -23,14 +26,12 @@ import {
   parseDateBlock,
   splitCurrencyParts,
 } from '../../lib/format'
+import { COMPLIANCE_SNAPSHOT, type VoucherType } from '../../lib/dummyData'
 import {
-  BASE_FINANCIAL_KPIS,
-  COMPANY_PROFILE,
-  COMPLIANCE_SNAPSHOT,
-  type ComplianceReconStatus,
-  type DayBookVoucher,
-  type VoucherType,
-} from '../../lib/dummyData'
+  useCancelVoucher,
+  useDashboardKPIs,
+  useDayBook,
+} from '../../hooks/useAccounting'
 import { Badge, StatusIndicator, type BadgeVariant } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
 import { Card, CardHeader, CardTitle } from '../../components/ui/Card'
@@ -42,10 +43,12 @@ import {
 } from '../../components/ui/DataTable'
 
 export interface FinancialCommandPageProps {
-  vouchers: DayBookVoucher[]
-  selectedVoucherId: string | null
-  onSelectVoucher: (voucher: DayBookVoucher | null) => void
+  selectedVoucherId: number | null
+  onSelectVoucher: (voucher: VoucherDTO | null) => void
   onOpenVoucher: (type: VoucherType) => void
+  onOpenLedgerStatement: (ledgerId: number) => void
+  onNavigateReport: (navId: string) => void
+  onNotify: (message: string) => void
 }
 
 type VoucherFilter = 'ALL' | VoucherType
@@ -60,30 +63,25 @@ const FILTER_PILLS: Array<{ id: VoucherFilter; label: string }> = [
   { id: 'CONTRA', label: 'Contra' },
 ]
 
-function getComplianceBadgeVariant(status: ComplianceReconStatus): BadgeVariant {
-  switch (status) {
-    case 'MATCHED':
-    case 'RECONCILED':
-    case 'E_INVOICE_IRN':
-      return 'success'
-    case 'PENDING_BRS':
-    case 'POST_DATED':
-      return 'warning'
-    case 'GSTR2B_MISMATCH':
-      return 'danger'
-    case 'CANCELLED':
-      return 'neutral'
-  }
+function getStatusVariant(status: ApiVoucherStatus): BadgeVariant {
+  if (status === 'POSTED') return 'success'
+  if (status === 'DRAFT') return 'warning'
+  return 'neutral'
 }
 
-function KpiHeroAmount({
-  value,
-  side,
-}: {
-  value: string | bigint
-  side: 'Dr' | 'Cr'
-}) {
+function getRegisterDisplaySides(v: VoucherDTO): { debit: string; credit: string } {
+  if (v.voucher_type === 'PURCHASE' || v.voucher_type === 'PAYMENT') {
+    return { debit: '0.0000', credit: v.total_credit }
+  }
+  if (v.voucher_type === 'SALES' || v.voucher_type === 'RECEIPT') {
+    return { debit: v.total_debit, credit: '0.0000' }
+  }
+  return { debit: v.total_debit, credit: v.total_credit }
+}
+
+function KpiHeroAmount({ value, side }: { value: string; side: DrCr }) {
   const parts = splitCurrencyParts(value, 'INR')
+  const sideLabel = side === 'DR' ? 'Dr' : 'Cr'
   return (
     <p className="mt-2 type-kpi leading-[1.15]">
       {parts.isNegative ? <span className="mr-0.5">&#x2212;</span> : null}
@@ -91,109 +89,90 @@ function KpiHeroAmount({
       <span>{parts.integer}</span>
       <span className="text-[0.6em] font-medium text-muted-text">{parts.fraction}</span>
       <span className="ml-1 text-[12.5px] font-medium tracking-normal text-muted-text">
-        {side}
+        {sideLabel}
       </span>
     </p>
   )
 }
 
 export function FinancialCommandPage({
-  vouchers,
   selectedVoucherId,
   onSelectVoucher,
   onOpenVoucher,
+  onOpenLedgerStatement,
+  onNavigateReport,
+  onNotify,
 }: FinancialCommandPageProps) {
   const [activeFilter, setActiveFilter] = useState<VoucherFilter>('ALL')
   const [density, setDensity] = useState<TableDensity>('comfortable')
 
-  const filteredVouchers = useMemo(() => {
-    if (activeFilter === 'ALL') return vouchers
-    return vouchers.filter((v) => v.voucherType === activeFilter)
-  }, [vouchers, activeFilter])
+  const kpisQuery = useDashboardKPIs()
+  const dayBookQuery = useDayBook()
+  const cancelVoucher = useCancelVoucher()
 
-  // Compute Day Book totals strictly over POSTED vouchers (excludes CANCELLED & POST_DATED per DESIGN_SYSTEM §8.8)
-  const { totalDebit, totalCredit, excludedCount } = useMemo(() => {
-    let dr = 0n
-    let cr = 0n
-    let excluded = 0
-    for (const v of filteredVouchers) {
-      if (v.lifecycleStatus !== 'POSTED') {
-        excluded += 1
-        continue
-      }
-      dr += toScaledInt(v.debit)
-      cr += toScaledInt(v.credit)
-    }
-    return { totalDebit: dr, totalCredit: cr, excludedCount: excluded }
-  }, [filteredVouchers])
-
-  // Dynamically reflect newly posted local session vouchers in Cash & AR/AP KPIs using exact BigInt
-  const kpiRaw = useMemo(() => {
-    let cash = toScaledInt(BASE_FINANCIAL_KPIS.cashAndBank)
-    let ar = toScaledInt(BASE_FINANCIAL_KPIS.sundryReceivables)
-    let ap = toScaledInt(BASE_FINANCIAL_KPIS.sundryPayables)
-
-    for (const v of vouchers) {
-      if (!v.id.startsWith('v-local-') || v.lifecycleStatus !== 'POSTED') continue
-      for (const ln of v.lines) {
-        const netDr = toScaledInt(ln.debit) - toScaledInt(ln.credit)
-        if (ln.accountCode === '1001' || ln.accountCode === '1010' || ln.accountCode === '1012') {
-          cash += netDr
-        } else if (ln.accountCode.startsWith('11')) {
-          ar += netDr
-        } else if (ln.accountCode.startsWith('20')) {
-          ap -= netDr
-        }
-      }
-    }
-
-    return {
-      cashAndBank: cash,
-      sundryReceivables: ar,
-      sundryPayables: ap,
-      netGstItc: toScaledInt(BASE_FINANCIAL_KPIS.netGstItcSurplus),
-    }
-  }, [vouchers])
-
-  const selectedVoucher = useMemo(
-    () => vouchers.find((v) => v.id === selectedVoucherId) ?? null,
-    [vouchers, selectedVoucherId],
+  const allVouchers = useMemo(
+    () => dayBookQuery.data?.vouchers ?? [],
+    [dayBookQuery.data],
   )
 
-  const columns = useMemo<DataTableColumnDef<DayBookVoucher>[]>(
+  const filteredVouchers = useMemo(() => {
+    if (activeFilter === 'ALL') return allVouchers
+    return allVouchers.filter((v) => v.voucher_type === (activeFilter as ApiVoucherType))
+  }, [allVouchers, activeFilter])
+
+  const selectedVoucher = useMemo(
+    () => allVouchers.find((v) => v.id === selectedVoucherId) ?? null,
+    [allVouchers, selectedVoucherId],
+  )
+
+  const handleVoucherAction = async (voucher: VoucherDTO, createReversal: boolean) => {
+    try {
+      const res = await cancelVoucher.mutateAsync({
+        voucherId: voucher.id,
+        createReversal,
+        reason: createReversal
+          ? 'Mirror reversal posted from Financial Command Center'
+          : 'Cancelled from Financial Command Center',
+      })
+      if (res.action === 'REVERSED' && res.reversal_voucher) {
+        onNotify(
+          `Posted reversal ${res.reversal_voucher.voucher_number} for ${voucher.voucher_number}`,
+        )
+      } else {
+        onNotify(`Cancelled ${voucher.voucher_number} (preserved for audit trail)`)
+      }
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'Unable to update voucher status')
+    }
+  }
+
+  const columns = useMemo<DataTableColumnDef<VoucherDTO>[]>(
     () => [
       {
-        accessorKey: 'voucherDate',
+        accessorKey: 'voucher_date',
         header: 'Date',
-        meta: {
-          align: 'left',
-          width: '72px',
-        } satisfies LedgerColumnMeta,
+        meta: { align: 'left', width: '76px' } satisfies LedgerColumnMeta,
         cell: ({ row }) => {
-          const cancelled = row.original.lifecycleStatus === 'CANCELLED'
+          const cancelled = row.original.status === 'CANCELLED'
           return (
             <span
-              title={formatDisplayDate(row.original.voucherDate)}
+              title={formatDisplayDate(row.original.voucher_date)}
               className={cn(
                 'code-mono text-[13px] text-muted-text',
                 cancelled && 'line-through text-disabled-text',
               )}
             >
-              {formatShortDate(row.original.voucherDate)}
+              {formatShortDate(row.original.voucher_date)}
             </span>
           )
         },
       },
       {
-        accessorKey: 'voucherNo',
+        accessorKey: 'voucher_number',
         header: 'Voucher No.',
-        meta: {
-          align: 'left',
-          mono: true,
-          width: '140px',
-        } satisfies LedgerColumnMeta,
+        meta: { align: 'left', mono: true, width: '148px' } satisfies LedgerColumnMeta,
         cell: ({ row }) => {
-          const cancelled = row.original.lifecycleStatus === 'CANCELLED'
+          const cancelled = row.original.status === 'CANCELLED'
           return (
             <span
               className={cn(
@@ -202,7 +181,7 @@ export function FinancialCommandPage({
               )}
             >
               <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-muted-text/60" aria-hidden="true" />
-              <span>{row.original.voucherNo}</span>
+              <span>{row.original.voucher_number}</span>
             </span>
           )
         },
@@ -210,47 +189,29 @@ export function FinancialCommandPage({
       {
         accessorKey: 'particulars',
         header: 'Particulars',
-        meta: {
-          align: 'left',
-          minWidth: '220px',
-        } satisfies LedgerColumnMeta,
+        meta: { align: 'left', minWidth: '220px' } satisfies LedgerColumnMeta,
         cell: ({ row }) => {
           const v = row.original
-          const cancelled = v.lifecycleStatus === 'CANCELLED'
-          const showInlineStatus =
-            v.complianceStatus === 'GSTR2B_MISMATCH' ||
-            v.complianceStatus === 'PENDING_BRS' ||
-            v.complianceStatus === 'POST_DATED' ||
-            v.complianceStatus === 'CANCELLED'
-
+          const cancelled = v.status === 'CANCELLED'
           return (
             <div className="min-w-0">
               <div className="flex items-center justify-between gap-2">
-                <div className="flex min-w-0 items-center gap-1.5">
-                  <p
-                    title={v.particulars}
-                    className={cn(
-                      'truncate text-[14px] font-medium leading-snug text-primary-text',
-                      cancelled && 'line-through text-disabled-text',
-                    )}
-                  >
-                    {v.particulars}
-                  </p>
-                  {v.currency !== 'INR' && v.foreignAmount ? (
-                    <span
-                      title={`FX Rate: 1 ${v.currency} = ₹${v.exchangeRate}`}
-                      className="shrink-0 code-mono text-[11px] font-medium text-muted-text"
-                    >
-                      ({v.currency} {formatCurrency(v.foreignAmount, { currency: v.currency, showSymbol: false })})
-                    </span>
-                  ) : null}
-                </div>
-                {showInlineStatus ? (
-                  <StatusIndicator
-                    variant={getComplianceBadgeVariant(v.complianceStatus)}
-                    className="shrink-0"
-                  >
-                    {v.complianceLabel}
+                <p
+                  title={v.particulars}
+                  className={cn(
+                    'truncate text-[14px] font-medium leading-snug text-primary-text',
+                    cancelled && 'line-through text-disabled-text',
+                  )}
+                >
+                  {v.particulars}
+                </p>
+                {v.status !== 'POSTED' ? (
+                  <StatusIndicator variant={getStatusVariant(v.status)} className="shrink-0">
+                    {v.status === 'CANCELLED' ? 'Cancelled' : 'Draft'}
+                  </StatusIndicator>
+                ) : v.reversed_voucher_id ? (
+                  <StatusIndicator variant="accent" className="shrink-0">
+                    Reversal
                   </StatusIndicator>
                 ) : null}
               </div>
@@ -267,16 +228,16 @@ export function FinancialCommandPage({
         },
       },
       {
-        accessorKey: 'debit',
+        id: 'register_debit',
         header: 'Debit (₹)',
-        meta: {
-          align: 'right',
-          mono: true,
-          width: '124px',
-        } satisfies LedgerColumnMeta,
+        accessorFn: (row) => getRegisterDisplaySides(row).debit,
+        meta: { align: 'right', mono: true, width: '124px' } satisfies LedgerColumnMeta,
         cell: ({ row }) => {
-          const cancelled = row.original.lifecycleStatus === 'CANCELLED'
-          const formatted = formatBookAmountCell(row.original.debit, 'INR')
+          const cancelled = row.original.status === 'CANCELLED'
+          const formatted = formatBookAmountCell(
+            getRegisterDisplaySides(row.original).debit,
+            'INR',
+          )
           return (
             <span
               aria-label={formatted.isNil ? 'nil' : `${formatted.text} rupees debit`}
@@ -292,8 +253,9 @@ export function FinancialCommandPage({
         },
       },
       {
-        accessorKey: 'credit',
+        id: 'register_credit',
         header: 'Credit (₹)',
+        accessorFn: (row) => getRegisterDisplaySides(row).credit,
         meta: {
           align: 'right',
           mono: true,
@@ -301,8 +263,11 @@ export function FinancialCommandPage({
           dividerLeft: true,
         } satisfies LedgerColumnMeta,
         cell: ({ row }) => {
-          const cancelled = row.original.lifecycleStatus === 'CANCELLED'
-          const formatted = formatBookAmountCell(row.original.credit, 'INR')
+          const cancelled = row.original.status === 'CANCELLED'
+          const formatted = formatBookAmountCell(
+            getRegisterDisplaySides(row.original).credit,
+            'INR',
+          )
           return (
             <span
               aria-label={formatted.isNil ? 'nil' : `${formatted.text} rupees credit`}
@@ -321,23 +286,48 @@ export function FinancialCommandPage({
     [density],
   )
 
+  const kpis = kpisQuery.data
+  const postedFilteredCount = filteredVouchers.filter((v) => v.status === 'POSTED').length
+  const excludedCount = filteredVouchers.length - postedFilteredCount
+
   return (
     <div className="space-y-4 md:space-y-6">
       {/* Page Header */}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-text">
-            <span>{COMPANY_PROFILE.periodLabel}</span>
+            <span>{kpis?.fiscal_year_label ?? 'FY 2026-27'}</span>
             <span aria-hidden="true">·</span>
             <span className="inline-flex items-center gap-1.5">
-              <span className="h-1.5 w-1.5 rounded-full bg-success" aria-hidden="true" />
-              <span>Books Open</span>
+              <span
+                className={cn(
+                  'h-1.5 w-1.5 rounded-full',
+                  kpis?.trial_balance_balanced === false ? 'bg-danger' : 'bg-success',
+                )}
+                aria-hidden="true"
+              />
+              <span>
+                {kpis
+                  ? kpis.trial_balance_balanced
+                    ? 'Books Balanced · SQLite WAL'
+                    : 'Trial Balance Variance'
+                  : 'Connecting to FastAPI...'}
+              </span>
             </span>
           </div>
           <h1 className="mt-1 type-h1">Financial Command Center</h1>
         </div>
 
         <div className="hidden md:flex items-center gap-2 print:hidden">
+          <Button variant="secondary" size="sm" onClick={() => onNavigateReport('trial-balance')}>
+            Trial Balance
+          </Button>
+          <Button variant="secondary" size="sm" onClick={() => onNavigateReport('profit-loss')}>
+            P&amp;L
+          </Button>
+          <Button variant="secondary" size="sm" onClick={() => onNavigateReport('balance-sheet')}>
+            Balance Sheet
+          </Button>
           <button
             type="button"
             onClick={() => window.print()}
@@ -350,96 +340,146 @@ export function FinancialCommandPage({
         </div>
       </div>
 
-      {/* Mobile Position Card (<= 260px compact height at 390px) */}
-      <section aria-label="Key Financial Position" className="md:hidden">
-        <Card padding="sm">
-          <div className="pb-3">
-            <p className="type-xs uppercase text-muted-text">Cash &amp; Bank Balance</p>
-            <KpiHeroAmount value={kpiRaw.cashAndBank} side="Dr" />
-            <p className="mt-1.5 flex items-center gap-1.5 text-[12px] font-medium text-success">
-              <TrendingUp className="h-3.5 w-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
-              <span>{BASE_FINANCIAL_KPIS.cashAndBankDelta}</span>
-            </p>
+      {/* KPI Error Banner */}
+      {kpisQuery.isError ? (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-[var(--status-danger-border)] bg-danger-bg px-4 py-3 text-[13px] text-danger"
+        >
+          <div className="flex items-center gap-2 font-medium">
+            <AlertTriangle className="h-4 w-4 shrink-0" strokeWidth={1.75} aria-hidden="true" />
+            <span>
+              Could not load live KPIs from FastAPI ({kpisQuery.error.message}). Ensure{' '}
+              <code className="code-mono">uvicorn app.main:app --reload</code> is running on port 8000.
+            </span>
           </div>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => kpisQuery.refetch()}
+            leftIcon={<RefreshCw className="h-3.5 w-3.5" strokeWidth={1.75} />}
+          >
+            Retry
+          </Button>
+        </div>
+      ) : null}
 
-          <div className="divide-y divide-border-row border-t border-border-row">
-            <div className="flex h-11 items-center justify-between gap-2">
-              <span className="text-[13px] font-medium text-muted-text">Sundry Receivables</span>
-              <span className="code-mono text-[16px] font-semibold text-primary-text">
-                {formatCurrency(kpiRaw.sundryReceivables, { currency: 'INR' })}
-                <span className="ml-1 text-[11px] font-medium text-muted-text">Dr</span>
-              </span>
-            </div>
-            <div className="flex h-11 items-center justify-between gap-2">
-              <span className="text-[13px] font-medium text-muted-text">Sundry Payables</span>
-              <span className="code-mono text-[16px] font-semibold text-primary-text">
-                {formatCurrency(kpiRaw.sundryPayables, { currency: 'INR' })}
-                <span className="ml-1 text-[11px] font-medium text-muted-text">Cr</span>
-              </span>
-            </div>
-            <div className="flex h-11 items-center justify-between gap-2">
-              <span className="text-[13px] font-medium text-muted-text">Net GST / ITC</span>
-              <span className="code-mono text-[16px] font-semibold text-primary-text">
-                {formatCurrency(kpiRaw.netGstItc, { currency: 'INR' })}
-                <span className="ml-1 text-[11px] font-medium text-muted-text">Dr</span>
-              </span>
-            </div>
-          </div>
+      {/* Mobile KPI Card */}
+      <section aria-label="Key Financial Position" className="md:hidden">
+        <Card padding="sm" loading={kpisQuery.isLoading}>
+          {kpis ? (
+            <>
+              <div className="pb-3">
+                <p className="type-xs uppercase text-muted-text">Cash &amp; Bank Balance</p>
+                <KpiHeroAmount
+                  value={kpis.cash_and_bank_balance}
+                  side={kpis.cash_and_bank_dr_cr}
+                />
+                <p className="mt-1.5 flex items-center gap-1.5 text-[12px] font-medium text-success">
+                  <TrendingUp className="h-3.5 w-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
+                  <span>{kpis.posted_vouchers} posted vouchers active</span>
+                </p>
+              </div>
+              <div className="divide-y divide-border-row border-t border-border-row">
+                <div className="flex h-11 items-center justify-between gap-2">
+                  <span className="text-[13px] font-medium text-muted-text">Sundry Debtors</span>
+                  <span className="code-mono text-[16px] font-semibold text-primary-text">
+                    {formatCurrency(kpis.sundry_debtors)}
+                    <span className="ml-1 text-[11px] font-medium text-muted-text">
+                      {kpis.sundry_debtors_dr_cr === 'DR' ? 'Dr' : 'Cr'}
+                    </span>
+                  </span>
+                </div>
+                <div className="flex h-11 items-center justify-between gap-2">
+                  <span className="text-[13px] font-medium text-muted-text">Sundry Creditors</span>
+                  <span className="code-mono text-[16px] font-semibold text-primary-text">
+                    {formatCurrency(kpis.sundry_creditors)}
+                    <span className="ml-1 text-[11px] font-medium text-muted-text">
+                      {kpis.sundry_creditors_dr_cr === 'DR' ? 'Dr' : 'Cr'}
+                    </span>
+                  </span>
+                </div>
+                <div className="flex h-11 items-center justify-between gap-2">
+                  <span className="text-[13px] font-medium text-muted-text">Net GST / Duties</span>
+                  <span className="code-mono text-[16px] font-semibold text-primary-text">
+                    {formatCurrency(kpis.net_gst_position)}
+                    <span className="ml-1 text-[11px] font-medium text-muted-text">
+                      {kpis.net_gst_dr_cr === 'DR' ? 'Dr' : 'Cr'}
+                    </span>
+                  </span>
+                </div>
+              </div>
+            </>
+          ) : null}
         </Card>
       </section>
 
-      {/* Desktop/Tablet Unified 4-Cell Financial KPI Strip */}
+      {/* Desktop Unified 4-Cell Live KPI Strip */}
       <section aria-label="Key Financial Balances" className="hidden md:block">
-        <div className="grid grid-cols-2 lg:grid-cols-4 rounded-md border border-border-subtle bg-surface shadow-[var(--shadow-card)]">
-          <div className="px-6 py-5">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.05em] text-muted-text">
-              Cash &amp; Bank Balance
-            </p>
-            <KpiHeroAmount value={kpiRaw.cashAndBank} side="Dr" />
-            <p className="mt-2 flex items-center gap-1.5 text-[12.5px] font-medium text-success">
-              <TrendingUp className="h-3.5 w-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
-              <span>{BASE_FINANCIAL_KPIS.cashAndBankDelta}</span>
-            </p>
+        {kpisQuery.isLoading ? (
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <Card key={`kpi-skel-${i}`} loading />
+            ))}
           </div>
+        ) : kpis ? (
+          <div className="grid grid-cols-2 lg:grid-cols-4 rounded-md border border-border-subtle bg-surface shadow-[var(--shadow-card)]">
+            <div className="px-6 py-5">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.05em] text-muted-text">
+                Cash &amp; Bank Balance
+              </p>
+              <KpiHeroAmount
+                value={kpis.cash_and_bank_balance}
+                side={kpis.cash_and_bank_dr_cr}
+              />
+              <p className="mt-2 flex items-center gap-1.5 text-[12.5px] font-medium text-success">
+                <TrendingUp className="h-3.5 w-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
+                <span>Live from Cash + Bank ledgers</span>
+              </p>
+            </div>
 
-          <div className="border-l border-border-subtle px-6 py-5">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.05em] text-muted-text">
-              Sundry Receivables
-            </p>
-            <KpiHeroAmount value={kpiRaw.sundryReceivables} side="Dr" />
-            <p className="mt-2 flex items-center gap-1.5 text-[12.5px] font-medium text-warning">
-              <AlertTriangle className="h-3.5 w-3.5 shrink-0" strokeWidth={1.75} aria-hidden="true" />
-              <span>{BASE_FINANCIAL_KPIS.receivablesNote}</span>
-            </p>
-          </div>
+            <div className="border-l border-border-subtle px-6 py-5">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.05em] text-muted-text">
+                Sundry Debtors (Receivables)
+              </p>
+              <KpiHeroAmount value={kpis.sundry_debtors} side={kpis.sundry_debtors_dr_cr} />
+              <p className="mt-2 flex items-center gap-1.5 text-[12.5px] font-medium text-muted-text">
+                <Clock className="h-3.5 w-3.5 shrink-0" strokeWidth={1.75} aria-hidden="true" />
+                <span>Customer balances outstanding</span>
+              </p>
+            </div>
 
-          <div className="border-t border-border-subtle lg:border-t-0 lg:border-l px-6 py-5">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.05em] text-muted-text">
-              Sundry Payables
-            </p>
-            <KpiHeroAmount value={kpiRaw.sundryPayables} side="Cr" />
-            <p className="mt-2 flex items-center gap-1.5 text-[12.5px] font-medium text-muted-text">
-              <Clock className="h-3.5 w-3.5 shrink-0" strokeWidth={1.75} aria-hidden="true" />
-              <span>{BASE_FINANCIAL_KPIS.payablesNote}</span>
-            </p>
-          </div>
+            <div className="border-t border-border-subtle lg:border-t-0 lg:border-l px-6 py-5">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.05em] text-muted-text">
+                Sundry Creditors (Payables)
+              </p>
+              <KpiHeroAmount value={kpis.sundry_creditors} side={kpis.sundry_creditors_dr_cr} />
+              <p className="mt-2 flex items-center gap-1.5 text-[12.5px] font-medium text-muted-text">
+                <Clock className="h-3.5 w-3.5 shrink-0" strokeWidth={1.75} aria-hidden="true" />
+                <span>
+                  {kpis.posted_vouchers} posted · {kpis.cancelled_vouchers} cancelled
+                </span>
+              </p>
+            </div>
 
-          <div className="border-t border-l border-border-subtle lg:border-t-0 px-6 py-5">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.05em] text-muted-text">
-              Net GST / ITC Position
-            </p>
-            <KpiHeroAmount value={kpiRaw.netGstItc} side="Dr" />
-            <p className="mt-2 flex items-center gap-1.5 text-[12.5px] font-medium text-success">
-              <CheckCircle2 className="h-3.5 w-3.5 shrink-0" strokeWidth={1.75} aria-hidden="true" />
-              <span>{BASE_FINANCIAL_KPIS.gstPositionNote}</span>
-            </p>
+            <div className="border-t border-l border-border-subtle lg:border-t-0 px-6 py-5">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.05em] text-muted-text">
+                Duties &amp; Taxes / Net GST
+              </p>
+              <KpiHeroAmount value={kpis.net_gst_position} side={kpis.net_gst_dr_cr} />
+              <p className="mt-2 flex items-center gap-1.5 text-[12.5px] font-medium text-success">
+                <CheckCircle2 className="h-3.5 w-3.5 shrink-0" strokeWidth={1.75} aria-hidden="true" />
+                <span>
+                  {kpis.net_gst_dr_cr === 'DR' ? 'Net ITC Credit Surplus' : 'Net GST Payable'}
+                </span>
+              </p>
+            </div>
           </div>
-        </div>
+        ) : null}
       </section>
 
-      {/* Main Split: Day Book (minmax(0,1fr)) + Compliance Rail (360px at >=1400px) */}
+      {/* Main Split: Day Book + Compliance Rail */}
       <section className="grid grid-cols-1 gap-4 md:gap-6 min-[1400px]:grid-cols-[minmax(0,1fr)_360px] items-start">
-        {/* Left: Recent Vouchers & Day Book */}
         <div className="space-y-4 min-w-0">
           <Card padding="none">
             <CardHeader>
@@ -449,13 +489,10 @@ export function FinancialCommandPage({
                   <span className="desktop-only-hint">
                     Click any row or use ↑ ↓ + Enter to inspect double-entry legs.
                   </span>
-                  <span className="touch-only-hint">
-                    Tap a voucher to see its entries.
-                  </span>
+                  <span className="touch-only-hint">Tap a voucher to see its entries.</span>
                 </p>
               </div>
 
-              {/* Comfort / Tally Density Segmented Control (Desktop only) */}
               <div className="desktop-only-hint hidden md:inline-flex items-center gap-0.5 rounded-md border border-border-input bg-muted p-[3px] print:hidden">
                 <button
                   type="button"
@@ -488,15 +525,15 @@ export function FinancialCommandPage({
               </div>
             </CardHeader>
 
-            {/* Voucher Type Filter Segmented Control */}
+            {/* Filter Pills */}
             <div className="px-4 py-2.5 md:px-5 md:py-3 print:hidden">
               <div className="no-scrollbar flex flex-nowrap md:inline-flex items-center gap-1 overflow-x-auto snap-x rounded-md border border-border-input bg-muted p-[3px]">
                 {FILTER_PILLS.map((pill) => {
                   const active = pill.id === activeFilter
                   const count =
                     pill.id === 'ALL'
-                      ? vouchers.length
-                      : vouchers.filter((v) => v.voucherType === pill.id).length
+                      ? allVouchers.length
+                      : allVouchers.filter((v) => v.voucher_type === pill.id).length
 
                   return (
                     <button
@@ -521,26 +558,26 @@ export function FinancialCommandPage({
               </div>
             </div>
 
-            {/* Mobile Card-List Day Book (<768px) */}
+            {/* Mobile Card-List Day Book */}
             <div className="md:hidden border-t border-border-row">
-              {filteredVouchers.length === 0 ? (
+              {dayBookQuery.isLoading ? (
+                <div className="p-4 space-y-3">
+                  {Array.from({ length: 4 }).map((_, i) => (
+                    <div key={`mob-skel-${i}`} className="h-14 rounded-sm bg-muted animate-pulse" />
+                  ))}
+                </div>
+              ) : filteredVouchers.length === 0 ? (
                 <div className="px-4 py-10 text-center">
-                  <p className="text-[14px] font-semibold text-primary-text">
-                    No matching vouchers
-                  </p>
+                  <p className="text-[14px] font-semibold text-primary-text">No matching vouchers</p>
                   <p className="mt-1 text-[13px] text-muted-text">
-                    Clear your active filter or post a new voucher.
+                    Clear your filter or post a balanced voucher.
                   </p>
                 </div>
               ) : (
                 <ul className="divide-y divide-border-row">
                   {filteredVouchers.map((v) => {
-                    const isDebit = toScaledInt(v.debit) > 0n
-                    const displayAmount = isDebit ? v.debit : v.credit
-                    const side = isDebit ? 'Dr' : 'Cr'
-                    const cancelled = v.lifecycleStatus === 'CANCELLED'
+                    const cancelled = v.status === 'CANCELLED'
                     const isSelected = v.id === selectedVoucherId
-
                     return (
                       <li key={v.id}>
                         <button
@@ -568,18 +605,15 @@ export function FinancialCommandPage({
                                 cancelled && 'line-through text-disabled-text',
                               )}
                             >
-                              {formatCurrency(displayAmount, { currency: 'INR', showSymbol: false })}
-                              <span className="ml-1 text-[11px] font-medium text-muted-text">
-                                {side}
-                              </span>
+                              {formatCurrency(v.total_debit, { currency: 'INR', showSymbol: false })}
                             </span>
                           </div>
                           <div className="flex items-center justify-between gap-2">
                             <span className="code-mono text-[12.5px] text-muted-text">
-                              {v.voucherNo} · {formatShortDate(v.voucherDate)}
+                              {v.voucher_number} · {formatShortDate(v.voucher_date)}
                             </span>
-                            <StatusIndicator variant={getComplianceBadgeVariant(v.complianceStatus)}>
-                              {v.complianceLabel}
+                            <StatusIndicator variant={getStatusVariant(v.status)}>
+                              {v.status}
                             </StatusIndicator>
                           </div>
                         </button>
@@ -590,15 +624,18 @@ export function FinancialCommandPage({
               )}
             </div>
 
-            {/* Desktop 5-Column Ledger Table (>=768px) */}
+            {/* Desktop 5-Column Live Table */}
             <div className="hidden md:block">
               <DataTable
                 ariaLabel="Recent Vouchers and Day Book"
                 data={filteredVouchers}
                 columns={columns}
                 density={density}
-                selectedRowId={selectedVoucherId}
-                getRowId={(row) => row.id}
+                loading={dayBookQuery.isLoading}
+                error={dayBookQuery.isError ? dayBookQuery.error.message : null}
+                onRetry={() => dayBookQuery.refetch()}
+                selectedRowId={selectedVoucherId !== null ? String(selectedVoucherId) : null}
+                getRowId={(row) => String(row.id)}
                 onRowActivate={(row) =>
                   onSelectVoucher(row.id === selectedVoucherId ? null : row)
                 }
@@ -616,15 +653,11 @@ export function FinancialCommandPage({
                       className="border-t-2 border-border-strong px-3 py-2.5 text-[14px] font-semibold text-primary-text"
                     >
                       <span className="inline-flex items-center gap-1.5">
-                        <span>
-                          Posted Register Totals ({filteredVouchers.length - excludedCount} active)
-                        </span>
+                        <span>Posted Register ({postedFilteredCount} active)</span>
                         {excludedCount > 0 ? (
                           <span
-                            tabIndex={0}
-                            aria-label={`${excludedCount} cancelled or post-dated vouchers excluded from totals`}
-                            title={`${excludedCount} cancelled/post-dated vouchers remain visible for GSTR-1 Table 13 numbering continuity and are excluded from Posted Register Totals.`}
-                            className="inline-flex items-center text-muted-text hover:text-primary-text cursor-help"
+                            title={`${excludedCount} cancelled or draft vouchers excluded from posted totals`}
+                            className="inline-flex items-center text-muted-text cursor-help"
                           >
                             <Info className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden="true" />
                           </span>
@@ -632,10 +665,16 @@ export function FinancialCommandPage({
                       </span>
                     </td>
                     <td className="grand-total-num-cell px-3 py-2.5 text-right code-mono text-[14px] font-semibold text-primary-text pr-4">
-                      {formatCurrency(totalDebit, { currency: 'INR', showSymbol: false })}
+                      {formatCurrency(dayBookQuery.data?.posted_total_debit ?? '0.0000', {
+                        currency: 'INR',
+                        showSymbol: false,
+                      })}
                     </td>
                     <td className="grand-total-num-cell border-l border-border-row px-3 py-2.5 text-right code-mono text-[14px] font-semibold text-primary-text pr-4">
-                      {formatCurrency(totalCredit, { currency: 'INR', showSymbol: false })}
+                      {formatCurrency(dayBookQuery.data?.posted_total_credit ?? '0.0000', {
+                        currency: 'INR',
+                        showSymbol: false,
+                      })}
                     </td>
                   </tr>
                 }
@@ -643,28 +682,54 @@ export function FinancialCommandPage({
             </div>
           </Card>
 
-          {/* Inline Double-Entry Leg Inspector when a Voucher Row is Selected */}
+          {/* Inline Double-Entry Leg Inspector with Cancel / Reversal Controls */}
           {selectedVoucher ? (
             <Card padding="none">
               <CardHeader className="py-3">
                 <div className="flex flex-wrap items-center gap-2">
                   <FileSpreadsheet className="h-4 w-4 text-accent" strokeWidth={1.75} />
                   <h3 className="type-h3">
-                    Voucher Drill-Down: <span className="code-mono">{selectedVoucher.voucherNo}</span>
+                    Voucher Drill-Down:{' '}
+                    <span className="code-mono">{selectedVoucher.voucher_number}</span>
                   </h3>
-                  <StatusIndicator variant={getComplianceBadgeVariant(selectedVoucher.complianceStatus)}>
-                    {selectedVoucher.complianceLabel}
+                  <StatusIndicator variant={getStatusVariant(selectedVoucher.status)}>
+                    {selectedVoucher.status}
                   </StatusIndicator>
                 </div>
-                <Button variant="ghost" size="sm" onClick={() => onSelectVoucher(null)}>
-                  Close Inspector
-                </Button>
+
+                <div className="flex flex-wrap items-center gap-2 print:hidden">
+                  {selectedVoucher.status === 'POSTED' && !selectedVoucher.reversed_voucher_id ? (
+                    <>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        loading={cancelVoucher.isPending}
+                        leftIcon={<RotateCcw className="h-3.5 w-3.5" strokeWidth={1.75} />}
+                        onClick={() => handleVoucherAction(selectedVoucher, true)}
+                      >
+                        Post Reversal
+                      </Button>
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        loading={cancelVoucher.isPending}
+                        leftIcon={<Ban className="h-3.5 w-3.5" strokeWidth={1.75} />}
+                        onClick={() => handleVoucherAction(selectedVoucher, false)}
+                      >
+                        Cancel Voucher
+                      </Button>
+                    </>
+                  ) : null}
+                  <Button variant="ghost" size="sm" onClick={() => onSelectVoucher(null)}>
+                    Close
+                  </Button>
+                </div>
               </CardHeader>
 
               <div className="px-4 py-3.5 md:px-5 space-y-3">
                 <p className="text-[13px] text-muted-text">
                   <span className="font-semibold text-primary-text">Narration: </span>
-                  {selectedVoucher.narration}
+                  {selectedVoucher.narration || '—'}
                 </p>
 
                 <div className="table-scroll rounded-md border border-border-subtle">
@@ -672,7 +737,7 @@ export function FinancialCommandPage({
                     <thead className="bg-table-header">
                       <tr className="h-9 border-b border-border-row text-[11px] font-semibold uppercase tracking-[0.05em] text-muted-text">
                         <th className="px-3 py-2 text-left">Code</th>
-                        <th className="px-3 py-2 text-left">Ledger Account</th>
+                        <th className="px-3 py-2 text-left">Ledger Account (Click for Statement)</th>
                         <th className="px-3 py-2 pr-4 text-right">Debit (₹)</th>
                         <th className="border-l border-border-row px-3 py-2 pr-4 text-right">
                           Credit (₹)
@@ -680,19 +745,25 @@ export function FinancialCommandPage({
                       </tr>
                     </thead>
                     <tbody>
-                      {selectedVoucher.lines.map((line, idx) => {
-                        const dr = formatBookAmountCell(line.debit, 'INR')
-                        const cr = formatBookAmountCell(line.credit, 'INR')
+                      {selectedVoucher.lines.map((line) => {
+                        const dr = formatBookAmountCell(line.debit_amount, 'INR')
+                        const cr = formatBookAmountCell(line.credit_amount, 'INR')
                         return (
                           <tr
-                            key={`${selectedVoucher.id}-ln-${idx}`}
-                            className="border-b border-border-row last:border-b-0"
+                            key={line.id}
+                            className="border-b border-border-row last:border-b-0 hover:bg-row-hover"
                           >
                             <td className="px-3 py-2 code-mono text-muted-text">
-                              {line.accountCode}
+                              {line.ledger_code}
                             </td>
-                            <td className="px-3 py-2 font-medium text-primary-text">
-                              {line.accountName}
+                            <td className="px-3 py-2">
+                              <button
+                                type="button"
+                                onClick={() => onOpenLedgerStatement(line.ledger_id)}
+                                className="font-medium text-accent hover:underline text-left cursor-pointer"
+                              >
+                                {line.ledger_name}
+                              </button>
                             </td>
                             <td
                               className={cn(
@@ -721,23 +792,19 @@ export function FinancialCommandPage({
           ) : null}
         </div>
 
-        {/* Right Rail: Flattened Compliance & Reconciliation Snapshot */}
+        {/* Right Rail: Compliance & Reconciliation Preview (Wired in M4/M5) */}
         <aside className="space-y-4 min-w-0">
-          {/* Bank Reconciliation Snapshot */}
           <Card>
             <div className="flex items-center justify-between gap-2 pb-3 border-b border-border-row">
               <div className="flex items-center gap-2">
                 <Landmark className="h-4 w-4 text-accent" strokeWidth={1.75} aria-hidden="true" />
                 <h2 className="type-h3">Bank Reconciliation (BRS)</h2>
               </div>
-              <Badge variant="warning">
-                {COMPLIANCE_SNAPSHOT.unreconciledBankLines} Pending
-              </Badge>
+              <Badge variant="warning">M4 Preview</Badge>
             </div>
-
             <div className="divide-y divide-border-row">
               <div className="flex items-baseline justify-between gap-2 py-2.5">
-                <span className="text-[15px] font-semibold text-primary-text">
+                <span className="text-[14px] font-semibold text-primary-text">
                   {COMPLIANCE_SNAPSHOT.unreconciledBankLines} unreconciled
                 </span>
                 <span className="code-mono text-[14px] font-medium text-primary-text">
@@ -747,22 +814,15 @@ export function FinancialCommandPage({
                   })}
                 </span>
               </div>
-              <div className="flex items-center justify-between gap-2 py-2.5 text-[12.5px]">
+              <div className="flex items-center justify-between gap-2 pt-2.5 text-[12.5px]">
                 <span className="text-muted-text">Account</span>
                 <span className="font-medium text-primary-text truncate">
                   {COMPLIANCE_SNAPSHOT.bankAccountLabel}
                 </span>
               </div>
-              <div className="flex items-center justify-between gap-2 pt-2.5 text-[12px]">
-                <span className="text-muted-text">Last CSV import</span>
-                <span className="code-mono text-muted-text">
-                  {COMPLIANCE_SNAPSHOT.lastBankSync}
-                </span>
-              </div>
             </div>
           </Card>
 
-          {/* GSTR-2B & IMS Match */}
           <Card>
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2">
@@ -773,7 +833,6 @@ export function FinancialCommandPage({
                 {COMPLIANCE_SNAPSHOT.gstr2bMatchPercent.toFixed(1)}%
               </span>
             </div>
-
             <div
               role="progressbar"
               aria-label="GSTR-2B ITC Reconciliation Match Percentage"
@@ -787,32 +846,19 @@ export function FinancialCommandPage({
                 style={{ width: `${COMPLIANCE_SNAPSHOT.gstr2bMatchPercent}%` }}
               />
             </div>
-
             <p className="mt-3 text-[12.5px] font-medium text-muted-text">
               <span className="code-mono font-semibold text-primary-text">
                 {COMPLIANCE_SNAPSHOT.gstr2bMatchedCount}/{COMPLIANCE_SNAPSHOT.gstr2bTotalCount}
               </span>{' '}
-              matched
-              <span className="mx-1.5" aria-hidden="true">·</span>
-              <span className="code-mono font-semibold text-warning">
-                {COMPLIANCE_SNAPSHOT.gstr2bMismatchCount}
-              </span>{' '}
-              variance
-              <span className="mx-1.5" aria-hidden="true">·</span>
-              <span className="code-mono font-semibold text-danger">
-                {COMPLIANCE_SNAPSHOT.gstr2bMissingCount}
-              </span>{' '}
-              missing
+              matched · Scheduled for M5 GST Suite
             </p>
           </Card>
 
-          {/* Statutory Compliance Calendar */}
           <Card>
             <div className="flex items-center gap-2 pb-2 border-b border-border-row">
               <CalendarClock className="h-4 w-4 text-accent" strokeWidth={1.75} aria-hidden="true" />
               <h2 className="type-h3">Statutory Compliance Calendar</h2>
             </div>
-
             <ul className="divide-y divide-border-row">
               {COMPLIANCE_SNAPSHOT.dueDates.map((item) => {
                 const block = parseDateBlock(item.dueDate)
@@ -834,20 +880,15 @@ export function FinancialCommandPage({
                         <p className="truncate text-[13px] font-medium text-primary-text">
                           {item.filing}
                         </p>
-                        <p className="text-[11.5px] text-muted-text">
-                          {item.period}
-                        </p>
+                        <p className="text-[11.5px] text-muted-text">{item.period}</p>
                       </div>
                     </div>
-
                     {item.urgentPill ? (
                       <Badge variant={item.status} icon={false}>
                         {item.statusText}
                       </Badge>
                     ) : (
-                      <StatusIndicator variant={item.status}>
-                        {item.statusText}
-                      </StatusIndicator>
+                      <StatusIndicator variant={item.status}>{item.statusText}</StatusIndicator>
                     )}
                   </li>
                 )

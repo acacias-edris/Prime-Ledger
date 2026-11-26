@@ -13,4 +13,29 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    rollupOptions: {
+      onwarn(warning, warn) {
+        if (
+          warning.code === 'INVALID_ANNOTATION' &&
+          warning.id?.includes('node_modules/zod')
+        ) {
+          return
+        }
+        warn(warning)
+      },
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return
+          if (id.includes('/zod/')) {
+            return 'vendor-zod'
+          }
+          if (id.includes('/lucide-react/')) {
+            return 'vendor-icons'
+          }
+          return 'vendor'
+        },
+      },
+    },
+  },
 })
