@@ -6,6 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 from app.core.config import get_settings
 from app.core.database import engine
@@ -42,12 +43,31 @@ async def _handle_accounting_error(
 ) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
+        headers=exc.headers or None,
         content={
             "error_code": exc.error_code,
             "message": exc.message,
             "details": exc.details,
         },
     )
+
+
+@app.exception_handler(OperationalError)
+async def _handle_operational_error(
+    _request: Request, exc: OperationalError
+) -> JSONResponse:
+    msg = str(getattr(exc, "orig", exc)).lower()
+    if "database is locked" in msg or "database is busy" in msg:
+        return JSONResponse(
+            status_code=409,
+            headers={"Retry-After": "1"},
+            content={
+                "error_code": "CONCURRENCY_CONFLICT",
+                "message": "Database is temporarily locked by another write; please retry.",
+                "details": {},
+            },
+        )
+    raise exc
 
 
 @app.get("/api/v1/health", tags=["system"])

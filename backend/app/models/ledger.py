@@ -6,6 +6,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Date,
@@ -17,6 +18,7 @@ from sqlalchemy import (
     UniqueConstraint,
     event,
     inspect as sa_inspect,
+    text,
 )
 from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 from sqlalchemy.orm.base import NO_VALUE
@@ -110,6 +112,7 @@ class Ledger(Base):
         UniqueConstraint("company_id", "code", name="uq_ledgers_company_code"),
         UniqueConstraint("company_id", "name", name="uq_ledgers_company_name"),
         CheckConstraint("opening_balance >= 0", name="non_negative_opening_balance"),
+        CheckConstraint("opening_balance >= 0", name="opening_balance_non_negative"),
         CheckConstraint("opening_dr_cr IN ('DR', 'CR')", name="valid_opening_dr_cr"),
         CheckConstraint("credit_days >= 0", name="non_negative_credit_days"),
     )
@@ -175,6 +178,14 @@ class Voucher(Base):
             "company_id",
             "voucher_date",
             "status",
+        ),
+        Index(
+            "uq_vouchers_one_posted_reversal",
+            "company_id",
+            "reversed_voucher_id",
+            unique=True,
+            sqlite_where=text("status = 'POSTED' AND reversed_voucher_id IS NOT NULL"),
+            postgresql_where=text("status = 'POSTED' AND reversed_voucher_id IS NOT NULL"),
         ),
     )
 
@@ -261,6 +272,22 @@ class VoucherLine(Base):
         back_populates="voucher_lines",
         lazy="selectin",
     )
+
+
+class VoucherSequence(Base):
+    """Gapless per (company, FY, voucher_type) counter. Row-locked by UPSERT ... RETURNING."""
+
+    __tablename__ = "voucher_sequences"
+    __table_args__ = (CheckConstraint("last_value >= 1", name="last_value_positive"),)
+
+    company_id: Mapped[int] = mapped_column(
+        ForeignKey("companies.id", ondelete="RESTRICT"), primary_key=True
+    )
+    fiscal_year_id: Mapped[int] = mapped_column(
+        ForeignKey("fiscal_years.id", ondelete="RESTRICT"), primary_key=True
+    )
+    voucher_type: Mapped[str] = mapped_column(String(24), primary_key=True)
+    last_value: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 
 @event.listens_for(Session, "before_flush")

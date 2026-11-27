@@ -74,13 +74,13 @@ class MoneyNumeric18_4(TypeDecorator[Decimal]):
     - PostgreSQL (Neon cloud): native NUMERIC(18, 4).
     """
 
-    impl = Numeric(18, 4)
+    impl = Numeric(18, 4, asdecimal=True)
     cache_ok = True
 
     def load_dialect_impl(self, dialect: Dialect):
         if dialect.name == "sqlite":
             return dialect.type_descriptor(BigInteger())
-        return dialect.type_descriptor(Numeric(18, 4))
+        return dialect.type_descriptor(Numeric(18, 4, asdecimal=True))
 
     def process_bind_param(
         self, value: Decimal | str | int | None, dialect: Dialect
@@ -92,13 +92,28 @@ class MoneyNumeric18_4(TypeDecorator[Decimal]):
             return int(dec * MONEY_SCALE)
         return dec
 
+    def process_literal_param(self, value: Any, dialect: Dialect) -> str:
+        bound = self.process_bind_param(value, dialect)
+        return "NULL" if bound is None else str(bound)
+
     def process_result_value(
-        self, value: int | Decimal | str | None, dialect: Dialect
+        self, value: int | Decimal | str | float | None, dialect: Dialect
     ) -> Decimal | None:
         if value is None:
             return None
         if dialect.name == "sqlite":
+            if isinstance(value, float):
+                if not value.is_integer():
+                    raise TypeError(
+                        f"SQLite returned float {value!r} for a scaled money column "
+                        "(AVG/division/unscaled literal?) -- precision lost."
+                    )
+                value = int(value)
             return (Decimal(int(value)) / MONEY_SCALE).quantize(
                 MONEY_QUANT, rounding=ROUND_HALF_UP
             )
         return Decimal(str(value)).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+
+    @property
+    def python_type(self) -> type[Decimal]:
+        return Decimal

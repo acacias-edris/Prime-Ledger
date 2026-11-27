@@ -11,6 +11,7 @@ class AccountingError(ValueError):
 
     status_code: int = 422
     error_code: str = "ACCOUNTING_ERROR"
+    headers: dict[str, str] | None = None
 
     def __init__(
         self,
@@ -19,6 +20,7 @@ class AccountingError(ValueError):
         status_code: int | None = None,
         error_code: str | None = None,
         details: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         super().__init__(message)
         self.message = message
@@ -26,6 +28,8 @@ class AccountingError(ValueError):
             self.status_code = status_code
         if error_code is not None:
             self.error_code = error_code
+        if headers is not None:
+            self.headers = headers
         self.details = details or {}
 
 
@@ -75,3 +79,9 @@ class ResourceNotFoundError(AccountingError):
 class DuplicateResourceError(AccountingError):
     status_code = 409
     error_code = "DUPLICATE_RESOURCE"
+
+
+class ConcurrencyConflictError(AccountingError):
+    status_code = 409
+    error_code = "CONCURRENCY_CONFLICT"
+    headers = {"Retry-After": "1"}

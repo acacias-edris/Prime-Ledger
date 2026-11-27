@@ -1,11 +1,25 @@
 from __future__ import annotations
 
+# =============================================================================
+# LedgerPrime -- modules/ledger/service.py  (Milestone 2 -- PATCHED, independent review)
+#
+# Every behavioural change is tagged  PATCH(Qn)  where n maps to the review question:
+#   Q1 sign conventions / contra / negative balances
+#   Q2 P&L -> Balance Sheet tie-out, retained earnings vs current period, any date range
+#   Q3 concurrency, numbering, DB constraints, money-type parity
+# Requires: models.ledger.VoucherSequence, exceptions.ConcurrencyConflictError,
+#           Alembic revision m2_0007_integrity (see migration file in this patch set).
+# =============================================================================
+
 from collections import defaultdict
 from datetime import date
 from decimal import Decimal
+from enum import Enum
 
-from sqlalchemy import func, or_, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func, literal, or_, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -18,10 +32,12 @@ from app.models.ledger import (
     Ledger,
     Voucher,
     VoucherLine,
+    VoucherSequence,
     VoucherStatus,
     VoucherType,
 )
 from app.modules.ledger.exceptions import (
+    ConcurrencyConflictError,
     DuplicateResourceError,
     FiscalYearLockedError,
     InvalidVoucherError,
@@ -63,16 +79,49 @@ VOUCHER_TYPE_PREFIX: dict[VoucherType, str] = {
     VoucherType.DEBIT_NOTE: "DN",
 }
 
+# PATCH(Q1/Q2): nominal (temporary) accounts reset at every FY start; real accounts carry forward.
+NOMINAL_NATURES: frozenset[str] = frozenset(
+    {AccountNature.INCOME.value, AccountNature.EXPENSE.value}
+)
+
+# PATCH(Q3): typed literal so the COALESCE fallback is bound THROUGH MoneyNumeric18_4
+# (scaled int on SQLite) instead of as a bare float 0.0 Numeric literal.
+_MONEY_ZERO = literal(ZERO, MoneyNumeric18_4())
+
+# PATCH(Q2): synthetic row/line used for prior-years' accumulated P&L (Tally "Profit & Loss A/c").
+RETAINED_EARNINGS_LABEL = "Profit & Loss A/c (Retained Earnings b/f)"
+RETAINED_EARNINGS_CODE = "P&L-BF"
+
+# PATCH(Q1): groups whose OPPOSITE balance must be re-presented on the other side of the
+# Balance Sheet (Schedule III / Ind AS 1 para 32: no offsetting). This is presentation only,
+# totals are unaffected. True contra accounts (Accumulated Depreciation) are NOT listed --
+# they must stay netted inside their parent asset group.
+RECLASSIFY_OPPOSITE_BALANCE_GROUPS: dict[str, str] = {
+    "Bank Accounts": "Bank Overdraft (reclassified)",
+    "Sundry Debtors": "Advances from Customers (reclassified)",
+    "Sundry Creditors": "Advances to Suppliers (reclassified)",
+}
+
 
 # ---------------------------------------------------------------------------
 # Internal Helpers (Exact Decimal Sign Conventions)
 # ---------------------------------------------------------------------------
 
 
+def _enum_value(value: object) -> str:
+    """PATCH(Q1): normalise str-or-Enum column values (Enum() column vs String column)."""
+    return value.value if isinstance(value, Enum) else str(value)
+
+
+def _is_nominal(ledger: Ledger) -> bool:
+    return _enum_value(ledger.group.nature) in NOMINAL_NATURES
+
+
 def _opening_signed(ledger: Ledger) -> Decimal:
-    """Debit-positive signed opening balance."""
+    """Debit-positive signed opening balance (as at books-beginning date)."""
     bal = quantize_money(ledger.opening_balance)
-    return bal if ledger.opening_dr_cr == DrCr.DR.value else -bal
+    side = DrCr(_enum_value(ledger.opening_dr_cr))
+    return bal if side is DrCr.DR else -bal
 
 
 def _split_signed_balance(signed: Decimal) -> tuple[Decimal, DrCr]:
@@ -146,10 +195,12 @@ def _serialize_voucher(voucher: Voucher) -> VoucherRead:
     )
 
 
-async def get_active_company_and_fy(
-    db: AsyncSession,
-    company_id: int | None = None,
-) -> tuple[Company, FiscalYear]:
+# ---------------------------------------------------------------------------
+# PATCH(Q2/Q3): Company / Fiscal-Year resolution BY DATE (never "latest FY")
+# ---------------------------------------------------------------------------
+
+
+async def _get_company(db: AsyncSession, company_id: int | None) -> Company:
     if company_id is not None:
         company = await db.get(Company, company_id)
     else:
@@ -160,24 +211,163 @@ async def get_active_company_and_fy(
             .limit(1)
         )
         company = (await db.execute(stmt)).scalar_one_or_none()
-
     if company is None:
         raise ResourceNotFoundError(
             "No active company found. Run `python -m app.seed.dummy_company` first."
         )
+    return company
 
-    fy_stmt = (
-        select(FiscalYear)
-        .where(FiscalYear.company_id == company.id)
-        .order_by(FiscalYear.start_date.desc())
-        .limit(1)
+
+async def _fy_for_date(
+    db: AsyncSession, company_id: int, on_date: date
+) -> FiscalYear | None:
+    stmt = select(FiscalYear).where(
+        FiscalYear.company_id == company_id,
+        FiscalYear.start_date <= on_date,
+        FiscalYear.end_date >= on_date,
     )
-    fy = (await db.execute(fy_stmt)).scalar_one_or_none()
+    return (await db.execute(stmt)).scalar_one_or_none()
+
+
+async def _books_beginning_date(db: AsyncSession, company: Company) -> date:
+    """Date the scalar ``ledgers.opening_balance`` values are stated at.
+
+    INVARIANT: ``ledgers.opening_balance`` is the balance at the earliest FiscalYear
+    start date (books-beginning date) and is NEVER rewritten by FY carry-forward.
+    Every report derives later openings from posted history.
+    """
+    first = (
+        await db.execute(
+            select(func.min(FiscalYear.start_date)).where(
+                FiscalYear.company_id == company.id
+            )
+        )
+    ).scalar_one_or_none()
+    if first is None:
+        raise ResourceNotFoundError(f"No fiscal year configured for company '{company.name}'.")
+    return first
+
+
+def _assert_period_open(fy: FiscalYear, _on_date: date) -> None:
+    """Reject mutations into a locked FiscalYear using the explicit FiscalYear.is_locked column."""
+    if fy.is_locked:
+        raise FiscalYearLockedError(f"Fiscal year {fy.label} is locked.")
+
+
+async def get_active_company_and_fy(
+    db: AsyncSession,
+    company_id: int | None = None,
+    on_date: date | None = None,
+) -> tuple[Company, FiscalYear]:
+    """PATCH(Q2): resolve the FY that CONTAINS ``on_date`` (default: today), falling back to
+    the latest FY only for display defaults."""
+    company = await _get_company(db, company_id)
+    target = on_date or date.today()
+    fy = await _fy_for_date(db, company.id, target)
+    if fy is None and on_date is None:
+        fy = (
+            await db.execute(
+                select(FiscalYear)
+                .where(FiscalYear.company_id == company.id)
+                .order_by(FiscalYear.start_date.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
     if fy is None:
         raise ResourceNotFoundError(
-            f"No fiscal year configured for company '{company.name}'."
+            f"No fiscal year configured for company '{company.name}' covering {target.isoformat()}."
         )
     return company, fy
+
+
+# ---------------------------------------------------------------------------
+# PATCH(Q3): Write serialisation, gapless numbering, DB-error mapping
+# ---------------------------------------------------------------------------
+
+
+def _dialect_name(db: AsyncSession) -> str:
+    return db.get_bind().dialect.name
+
+
+async def _acquire_company_write_lock(db: AsyncSession, company_id: int) -> None:
+    """Serialise ledger writes per tenant for the rest of the transaction."""
+    if _dialect_name(db) == "postgresql":
+        await db.execute(
+            text("SELECT pg_advisory_xact_lock(:k)"),
+            {"k": (0x4C50 << 32) | int(company_id)},
+        )
+
+
+def _voucher_prefix(fy: FiscalYear, voucher_type: VoucherType) -> str:
+    return f"{VOUCHER_TYPE_PREFIX[voucher_type]}/{_format_fy_code(fy)}/"
+
+
+async def _next_voucher_number(
+    db: AsyncSession,
+    company_id: int,
+    fy: FiscalYear,
+    voucher_type: VoucherType,
+) -> str:
+    """Gapless, race-free, per (company, FY, type) series."""
+    insert_fn = pg_insert if _dialect_name(db) == "postgresql" else sqlite_insert
+    stmt = (
+        insert_fn(VoucherSequence)
+        .values(
+            company_id=company_id,
+            fiscal_year_id=fy.id,
+            voucher_type=voucher_type.value,
+            last_value=1,
+        )
+        .on_conflict_do_update(
+            index_elements=["company_id", "fiscal_year_id", "voucher_type"],
+            set_={"last_value": VoucherSequence.last_value + 1},
+        )
+        .returning(VoucherSequence.last_value)
+    )
+    seq = int((await db.execute(stmt)).scalar_one())
+    return f"{_voucher_prefix(fy, voucher_type)}{seq:04d}"
+
+
+def _is_sqlite_busy(exc: OperationalError) -> bool:
+    msg = str(getattr(exc, "orig", exc)).lower()
+    return "database is locked" in msg or "database is busy" in msg
+
+
+def _map_integrity_error(exc: IntegrityError, voucher_number: str, fy: FiscalYear) -> Exception:
+    msg = str(getattr(exc, "orig", exc))
+    if "uq_vouchers" in msg or "UNIQUE constraint failed: vouchers." in msg:
+        if "reversed_voucher_id" in msg or "one_posted_reversal" in msg:
+            return DuplicateResourceError("This voucher has already been reversed.")
+        return DuplicateResourceError(
+            f"Voucher number '{voucher_number}' already exists in {fy.label}."
+        )
+    if "ck_vouchers_posted_balanced" in msg:
+        return InvalidVoucherError("Database rejected a POSTED voucher whose SUM(Dr) != SUM(Cr).")
+    if "immutable once posted" in msg:
+        return InvalidVoucherError("Lines of a POSTED/CANCELLED voucher are immutable.")
+    return InvalidVoucherError("Voucher violates a database integrity constraint.")
+
+
+async def _flush_post_commit(
+    db: AsyncSession, voucher: Voucher, target_status: str, voucher_number: str, fy: FiscalYear
+) -> None:
+    """Two-phase post: INSERT as DRAFT -> flush lines -> UPDATE status='POSTED' -> COMMIT."""
+    try:
+        await db.flush()
+        if target_status == VoucherStatus.POSTED.value:
+            voucher.status = VoucherStatus.POSTED.value
+            await db.flush()
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise _map_integrity_error(exc, voucher_number, fy) from exc
+    except OperationalError as exc:
+        await db.rollback()
+        if _is_sqlite_busy(exc):
+            raise ConcurrencyConflictError(
+                "Ledger is busy with another posting; please retry."
+            ) from exc
+        raise
 
 
 async def get_company_context(
@@ -225,10 +415,10 @@ async def _fetch_posted_sums_by_ledger(
         select(
             VoucherLine.ledger_id,
             func.coalesce(
-                func.sum(VoucherLine.debit_amount), ZERO, type_=MoneyNumeric18_4()
+                func.sum(VoucherLine.debit_amount), _MONEY_ZERO, type_=MoneyNumeric18_4()
             ),
             func.coalesce(
-                func.sum(VoucherLine.credit_amount), ZERO, type_=MoneyNumeric18_4()
+                func.sum(VoucherLine.credit_amount), _MONEY_ZERO, type_=MoneyNumeric18_4()
             ),
         )
         .join(Voucher, VoucherLine.voucher_id == Voucher.id)
@@ -240,28 +430,6 @@ async def _fetch_posted_sums_by_ledger(
         int(ledger_id): (quantize_money(dr), quantize_money(cr))
         for ledger_id, dr, cr in rows
     }
-
-
-async def _generate_next_voucher_number(
-    db: AsyncSession,
-    company_id: int,
-    fy: FiscalYear,
-    voucher_type: VoucherType,
-) -> str:
-    prefix = f"{VOUCHER_TYPE_PREFIX[voucher_type]}/{_format_fy_code(fy)}/"
-    stmt = select(Voucher.voucher_number).where(
-        Voucher.company_id == company_id,
-        Voucher.fiscal_year_id == fy.id,
-        Voucher.voucher_type == voucher_type.value,
-        Voucher.voucher_number.like(f"{prefix}%"),
-    )
-    existing_numbers = list((await db.execute(stmt)).scalars().all())
-    max_seq = 0
-    for vno in existing_numbers:
-        suffix = vno[len(prefix) :]
-        if suffix.isdigit():
-            max_seq = max(max_seq, int(suffix))
-    return f"{prefix}{max_seq + 1:04d}"
 
 
 # ---------------------------------------------------------------------------
@@ -414,12 +582,18 @@ async def create_ledger(
             f"AccountGroup id={payload.group_id} not found for company."
         )
 
+    opening = quantize_money(payload.opening_balance)
+    if opening < ZERO:
+        raise InvalidVoucherError(
+            "opening_balance must be >= 0.0000; express the side via opening_dr_cr (DR/CR)."
+        )
+
     ledger = Ledger(
         company_id=company.id,
         group_id=group.id,
         code=payload.code.strip().upper(),
         name=payload.name.strip(),
-        opening_balance=quantize_money(payload.opening_balance),
+        opening_balance=opening,
         opening_dr_cr=payload.opening_dr_cr.value,
         party_gstin=payload.party_gstin.strip().upper() if payload.party_gstin else None,
         party_state_code=payload.party_state_code.strip()
@@ -470,34 +644,32 @@ async def create_voucher(
     payload: VoucherCreate,
     company_id: int | None = None,
 ) -> VoucherRead:
-    company, fy = await get_active_company_and_fy(db, company_id)
+    company = await _get_company(db, company_id)
 
-    if fy.is_locked:
-        raise FiscalYearLockedError(
-            f"Fiscal year {fy.label} is locked; no new vouchers may be posted."
-        )
-    if not (fy.start_date <= payload.voucher_date <= fy.end_date):
+    # PATCH(Q3): FY is the one CONTAINING voucher_date (not the latest FY).
+    fy = await _fy_for_date(db, company.id, payload.voucher_date)
+    if fy is None:
         raise InvalidVoucherError(
-            f"Voucher date {payload.voucher_date.isoformat()} falls outside active "
-            f"fiscal year {fy.label} ({fy.start_date.isoformat()} to {fy.end_date.isoformat()})."
+            f"Voucher date {payload.voucher_date.isoformat()} is not inside any configured fiscal year."
         )
+    _assert_period_open(fy, payload.voucher_date)
 
     if len(payload.lines) < 2:
         raise InvalidVoucherError("A double-entry voucher requires at least 2 lines.")
 
-    # Resolve all ledger_id / account_code references in a single query
     requested_ids = {ln.ledger_id for ln in payload.lines if ln.ledger_id is not None}
     requested_codes = {
         ln.account_code.strip().upper()
         for ln in payload.lines
         if ln.ledger_id is None and ln.account_code
     }
-
     filters = []
     if requested_ids:
         filters.append(Ledger.id.in_(requested_ids))
     if requested_codes:
         filters.append(Ledger.code.in_(requested_codes))
+    if not filters:
+        raise InvalidVoucherError("Every line must reference a ledger_id or account_code.")
 
     ledgers_stmt = select(Ledger).where(
         Ledger.company_id == company.id,
@@ -513,7 +685,6 @@ async def create_voucher(
     orm_lines: list[VoucherLine] = []
 
     for idx, line_in in enumerate(payload.lines, start=1):
-        ledger: Ledger | None = None
         if line_in.ledger_id is not None:
             ledger = by_id.get(line_in.ledger_id)
             if ledger is None:
@@ -553,14 +724,20 @@ async def create_voucher(
         if total_dr != total_cr:
             raise UnbalancedVoucherError(total_debit=total_dr, total_credit=total_cr)
 
-    voucher_number = (
-        payload.voucher_number.strip()
-        if payload.voucher_number and payload.voucher_number.strip()
-        else await _generate_next_voucher_number(
-            db, company.id, fy, payload.voucher_type
+    auto_prefix = _voucher_prefix(fy, payload.voucher_type)
+    manual_no = (payload.voucher_number or "").strip()
+    if manual_no and manual_no.upper().startswith(auto_prefix.upper()):
+        raise InvalidVoucherError(
+            f"'{manual_no}' is inside the reserved automatic series '{auto_prefix}####'; "
+            "omit voucher_number to auto-assign."
         )
+
+    await _acquire_company_write_lock(db, company.id)
+    voucher_number = manual_no or await _next_voucher_number(
+        db, company.id, fy, payload.voucher_type
     )
 
+    target_status = payload.status.value
     voucher = Voucher(
         company_id=company.id,
         fiscal_year_id=fy.id,
@@ -569,17 +746,13 @@ async def create_voucher(
         voucher_date=payload.voucher_date,
         reference_no=payload.reference_no.strip() if payload.reference_no else None,
         narration=payload.narration.strip(),
-        status=payload.status.value,
+        status=VoucherStatus.DRAFT.value
+        if target_status == VoucherStatus.POSTED.value
+        else target_status,
         lines=orm_lines,
     )
     db.add(voucher)
-    try:
-        await db.commit()
-    except IntegrityError as exc:
-        await db.rollback()
-        raise DuplicateResourceError(
-            f"Voucher number '{voucher_number}' already exists in {fy.label}."
-        ) from exc
+    await _flush_post_commit(db, voucher, target_status, voucher_number, fy)
 
     return await get_voucher(db, voucher.id, company_id=company.id)
 
@@ -587,7 +760,7 @@ async def create_voucher(
 async def get_voucher(
     db: AsyncSession, voucher_id: int, company_id: int | None = None
 ) -> VoucherRead:
-    company, _fy = await get_active_company_and_fy(db, company_id)
+    company = await _get_company(db, company_id)
     stmt = (
         select(Voucher)
         .options(selectinload(Voucher.lines).selectinload(VoucherLine.ledger))
@@ -607,15 +780,13 @@ async def cancel_voucher(
 ) -> VoucherCancelResponse:
     """
     Never hard-deletes posted vouchers:
-    - create_reversal=False: transitions voucher status to CANCELLED (excluded from Trial Balance,
-      retained in register for audit & numbering continuity).
-    - create_reversal=True: keeps original POSTED and posts an atomic mirror reversing JOURNAL
-      entry (swapping every debit_amount <-> credit_amount) with reversed_voucher_id set so
-      the combined net effect across every ledger is exact 0.0000.
+    - create_reversal=False: status -> CANCELLED. Allowed only while the ORIGINAL voucher's
+      period is open.
+    - create_reversal=True: keeps original POSTED and posts a mirror JOURNAL numbered,
+      locked-checked and dated in the REVERSAL's fiscal year.
     """
-    company, fy = await get_active_company_and_fy(db, company_id)
-    if fy.is_locked:
-        raise FiscalYearLockedError(f"Fiscal year {fy.label} is locked.")
+    company = await _get_company(db, company_id)
+    await _acquire_company_write_lock(db, company.id)
 
     stmt = (
         select(Voucher)
@@ -626,10 +797,12 @@ async def cancel_voucher(
     if voucher is None:
         raise ResourceNotFoundError(f"Voucher id={voucher_id} not found.")
 
+    voucher_fy = await db.get(FiscalYear, voucher.fiscal_year_id)
+    if voucher_fy is None:
+        raise ResourceNotFoundError(f"Fiscal year id={voucher.fiscal_year_id} not found.")
+
     if voucher.status == VoucherStatus.CANCELLED.value:
-        raise InvalidVoucherError(
-            f"Voucher {voucher.voucher_number} is already CANCELLED."
-        )
+        raise InvalidVoucherError(f"Voucher {voucher.voucher_number} is already CANCELLED.")
 
     existing_rev_stmt = select(Voucher.id).where(
         Voucher.company_id == company.id,
@@ -637,36 +810,39 @@ async def cancel_voucher(
         Voucher.status == VoucherStatus.POSTED.value,
     )
     if (await db.execute(existing_rev_stmt)).scalar_one_or_none() is not None:
-        raise DuplicateResourceError(
-            f"Voucher {voucher.voucher_number} has already been reversed."
-        )
+        raise DuplicateResourceError(f"Voucher {voucher.voucher_number} has already been reversed.")
 
     reason_note = (
-        f" | Reason: {payload.reason.strip()}"
-        if payload.reason and payload.reason.strip()
-        else ""
+        f" | Reason: {payload.reason.strip()}" if payload.reason and payload.reason.strip() else ""
     )
 
     if not payload.create_reversal:
+        _assert_period_open(voucher_fy, voucher.voucher_date)
         voucher.status = VoucherStatus.CANCELLED.value
         if reason_note:
             voucher.narration = f"{voucher.narration}{reason_note}"[:500]
-        await db.commit()
-        updated = await get_voucher(db, voucher.id, company_id=company.id)
-        return VoucherCancelResponse(
-            original_voucher=updated,
-            reversal_voucher=None,
-            action="CANCELLED",
+        await _flush_post_commit(
+            db, voucher, VoucherStatus.CANCELLED.value, voucher.voucher_number, voucher_fy
         )
+        updated = await get_voucher(db, voucher.id, company_id=company.id)
+        return VoucherCancelResponse(original_voucher=updated, reversal_voucher=None, action="CANCELLED")
 
     if voucher.status != VoucherStatus.POSTED.value:
-        raise InvalidVoucherError(
-            "Only POSTED vouchers can be reversed with a mirror journal entry."
-        )
+        raise InvalidVoucherError("Only POSTED vouchers can be reversed with a mirror journal entry.")
 
-    rev_number = await _generate_next_voucher_number(
-        db, company.id, fy, VoucherType.JOURNAL
+    rev_date: date = payload.reversal_date or voucher.voucher_date
+    if rev_date < voucher.voucher_date:
+        raise InvalidVoucherError("A reversal cannot be dated before the voucher it reverses.")
+    rev_fy = (
+        voucher_fy
+        if voucher_fy.start_date <= rev_date <= voucher_fy.end_date
+        else await _fy_for_date(db, company.id, rev_date)
     )
+    if rev_fy is None:
+        raise InvalidVoucherError(f"No fiscal year covers reversal date {rev_date.isoformat()}.")
+    _assert_period_open(rev_fy, rev_date)
+
+    rev_number = await _next_voucher_number(db, company.id, rev_fy, VoucherType.JOURNAL)
     mirror_lines = [
         VoucherLine(
             ledger_id=ln.ledger_id,
@@ -678,25 +854,23 @@ async def cancel_voucher(
     ]
     reversal = Voucher(
         company_id=company.id,
-        fiscal_year_id=voucher.fiscal_year_id,
+        fiscal_year_id=rev_fy.id,
         voucher_number=rev_number,
         voucher_type=VoucherType.JOURNAL.value,
-        voucher_date=voucher.voucher_date,
+        voucher_date=rev_date,
         reference_no=voucher.voucher_number,
         narration=f"Reversal of {voucher.voucher_number}{reason_note}"[:500],
-        status=VoucherStatus.POSTED.value,
+        status=VoucherStatus.DRAFT.value,
         reversed_voucher_id=voucher.id,
         lines=mirror_lines,
     )
     db.add(reversal)
-    await db.commit()
+    await _flush_post_commit(db, reversal, VoucherStatus.POSTED.value, rev_number, rev_fy)
 
     original_read = await get_voucher(db, voucher.id, company_id=company.id)
     reversal_read = await get_voucher(db, reversal.id, company_id=company.id)
     return VoucherCancelResponse(
-        original_voucher=original_read,
-        reversal_voucher=reversal_read,
-        action="REVERSED",
+        original_voucher=original_read, reversal_voucher=reversal_read, action="REVERSED"
     )
 
 
@@ -771,6 +945,24 @@ async def get_day_book(
     )
 
 
+# ---------------------------------------------------------------------------
+# PATCH(Q2): FY-aware balance decomposition shared by Ledger Statement / TB / P&L / BS
+# ---------------------------------------------------------------------------
+
+
+def _net(sums: dict[int, tuple[Decimal, Decimal]], ledger_id: int) -> Decimal:
+    dr, cr = sums.get(ledger_id, (ZERO, ZERO))
+    return dr - cr
+
+
+def _nominal_opening_in_fy(ledger: Ledger, books_start: date, fy: FiscalYear) -> Decimal:
+    return _opening_signed(ledger) if books_start >= fy.start_date else ZERO
+
+
+def _nominal_opening_prior(ledger: Ledger, books_start: date, fy: FiscalYear) -> Decimal:
+    return _opening_signed(ledger) if books_start < fy.start_date else ZERO
+
+
 async def get_ledger_statement(
     db: AsyncSession,
     ledger_id: int,
@@ -779,9 +971,11 @@ async def get_ledger_statement(
     from_date: date | None = None,
     to_date: date | None = None,
 ) -> LedgerStatementRead:
-    company, fy = await get_active_company_and_fy(db, company_id)
-    eff_from = from_date or fy.start_date
-    eff_to = to_date or fy.end_date
+    company, default_fy = await get_active_company_and_fy(db, company_id, from_date)
+    eff_from = from_date or default_fy.start_date
+    eff_to = to_date or default_fy.end_date
+    if eff_from > eff_to:
+        raise InvalidVoucherError("from_date must be on or before to_date.")
 
     ledger_stmt = (
         select(Ledger)
@@ -792,15 +986,19 @@ async def get_ledger_statement(
     if ledger is None:
         raise ResourceNotFoundError(f"Ledger id={ledger_id} not found.")
 
-    # Pre-period posted lines roll into opening balance as of eff_from
-    pre_sums = await _fetch_posted_sums_by_ledger(
-        db, company.id, before_date=eff_from
-    )
-    pre_dr, pre_cr = pre_sums.get(ledger.id, (ZERO, ZERO))
-    opening_signed = _opening_signed(ledger) + pre_dr - pre_cr
+    fy = await _fy_for_date(db, company.id, eff_from) or default_fy
+    books_start = await _books_beginning_date(db, company)
+
+    if _is_nominal(ledger):
+        pre = await _fetch_posted_sums_by_ledger(
+            db, company.id, from_date=fy.start_date, before_date=eff_from
+        )
+        opening_signed = _nominal_opening_in_fy(ledger, books_start, fy) + _net(pre, ledger.id)
+    else:
+        pre = await _fetch_posted_sums_by_ledger(db, company.id, before_date=eff_from)
+        opening_signed = _opening_signed(ledger) + _net(pre, ledger.id)
     open_abs, open_side = _split_signed_balance(opening_signed)
 
-    # Fetch chronological posted lines in [eff_from, eff_to] with sibling lines for particulars
     lines_stmt = (
         select(VoucherLine)
         .join(Voucher, VoucherLine.voucher_id == Voucher.id)
@@ -824,7 +1022,6 @@ async def get_ledger_statement(
     period_dr = ZERO
     period_cr = ZERO
     entries: list[LedgerStatementRow] = []
-
     for ln in period_lines:
         dr = quantize_money(ln.debit_amount)
         cr = quantize_money(ln.credit_amount)
@@ -832,8 +1029,6 @@ async def get_ledger_statement(
         period_cr += cr
         running_signed += dr - cr
         run_abs, run_side = _split_signed_balance(running_signed)
-
-        # Counterparty ledger name for Tally-style Particulars column
         counterparts = [
             sib.ledger.name
             for sib in ln.voucher.lines
@@ -852,7 +1047,6 @@ async def get_ledger_statement(
                 else ln.voucher.narration or "Journal Entry"
             )
         )
-
         entries.append(
             LedgerStatementRow(
                 voucher_id=ln.voucher.id,
@@ -875,7 +1069,7 @@ async def get_ledger_statement(
         ledger_code=ledger.code,
         ledger_name=ledger.name,
         group_name=ledger.group.name,
-        group_nature=AccountNature(ledger.group.nature),
+        group_nature=AccountNature(_enum_value(ledger.group.nature)),
         from_date=eff_from,
         to_date=eff_to,
         opening_balance=open_abs,
@@ -896,113 +1090,103 @@ async def get_trial_balance(
     to_date: date | None = None,
     include_zero: bool = False,
 ) -> TrialBalanceReportRead:
-    company, fy = await get_active_company_and_fy(db, company_id)
-    eff_from = from_date or fy.start_date
-    eff_to = to_date or fy.end_date
+    company, default_fy = await get_active_company_and_fy(db, company_id, from_date)
+    eff_from = from_date or default_fy.start_date
+    eff_to = to_date or default_fy.end_date
+    if eff_from > eff_to:
+        raise InvalidVoucherError("from_date must be on or before to_date.")
+    fy = await _fy_for_date(db, company.id, eff_from) or default_fy
+    books_start = await _books_beginning_date(db, company)
 
     ledgers_stmt = (
         select(Ledger)
         .join(AccountGroup, Ledger.group_id == AccountGroup.id)
         .options(selectinload(Ledger.group))
-        .where(Ledger.company_id == company.id, Ledger.is_active.is_(True))
+        .where(Ledger.company_id == company.id)
         .order_by(AccountGroup.display_order.asc(), Ledger.code.asc())
     )
     ledgers = list((await db.execute(ledgers_stmt)).scalars().all())
 
-    pre_sums = await _fetch_posted_sums_by_ledger(db, company.id, before_date=eff_from)
+    pre_all = await _fetch_posted_sums_by_ledger(db, company.id, before_date=eff_from)
+    pre_in_fy = await _fetch_posted_sums_by_ledger(
+        db, company.id, from_date=fy.start_date, before_date=eff_from
+    )
+    prior_years = await _fetch_posted_sums_by_ledger(db, company.id, before_date=fy.start_date)
     period_sums = await _fetch_posted_sums_by_ledger(
         db, company.id, from_date=eff_from, to_date=eff_to
     )
 
     rows: list[TrialBalanceRow] = []
     group_acc: dict[int, dict] = {}
+    tot = defaultdict(lambda: ZERO)
+    retained_signed = ZERO
 
-    tot_open_dr = ZERO
-    tot_open_cr = ZERO
-    tot_period_dr = ZERO
-    tot_period_cr = ZERO
-    tot_close_dr = ZERO
-    tot_close_cr = ZERO
+    def _accumulate(row: TrialBalanceRow) -> None:
+        for k in ("opening_debit", "opening_credit", "period_debit", "period_credit",
+                  "closing_debit", "closing_credit"):
+            tot[k] += getattr(row, k)
+        g = group_acc.setdefault(
+            row.group_id,
+            {"group_id": row.group_id, "group_name": row.group_name, "nature": row.nature,
+             "opening_debit": ZERO, "opening_credit": ZERO, "period_debit": ZERO,
+             "period_credit": ZERO, "closing_debit": ZERO, "closing_credit": ZERO},
+        )
+        for k in ("opening_debit", "opening_credit", "period_debit", "period_credit",
+                  "closing_debit", "closing_credit"):
+            g[k] += getattr(row, k)
 
     for ledger in ledgers:
-        pre_dr, pre_cr = pre_sums.get(ledger.id, (ZERO, ZERO))
         p_dr, p_cr = period_sums.get(ledger.id, (ZERO, ZERO))
-
-        open_signed = _opening_signed(ledger) + pre_dr - pre_cr
+        if _is_nominal(ledger):
+            open_signed = _nominal_opening_in_fy(ledger, books_start, fy) + _net(pre_in_fy, ledger.id)
+            retained_signed += _nominal_opening_prior(ledger, books_start, fy) + _net(prior_years, ledger.id)
+        else:
+            open_signed = _opening_signed(ledger) + _net(pre_all, ledger.id)
         close_signed = open_signed + p_dr - p_cr
-
         o_dr, o_cr = _to_dr_cr_columns(open_signed)
         c_dr, c_cr = _to_dr_cr_columns(close_signed)
-
-        if not include_zero and (
-            o_dr == ZERO
-            and o_cr == ZERO
-            and p_dr == ZERO
-            and p_cr == ZERO
-            and c_dr == ZERO
-            and c_cr == ZERO
-        ):
+        if not include_zero and not any((o_dr, o_cr, p_dr, p_cr, c_dr, c_cr)):
             continue
-
-        tot_open_dr += o_dr
-        tot_open_cr += o_cr
-        tot_period_dr += p_dr
-        tot_period_cr += p_cr
-        tot_close_dr += c_dr
-        tot_close_cr += c_cr
-
-        rows.append(
-            TrialBalanceRow(
-                ledger_id=ledger.id,
-                ledger_code=ledger.code,
-                ledger_name=ledger.name,
-                group_id=ledger.group_id,
-                group_name=ledger.group.name,
-                nature=AccountNature(ledger.group.nature),
-                opening_debit=o_dr,
-                opening_credit=o_cr,
-                period_debit=p_dr,
-                period_credit=p_cr,
-                closing_debit=c_dr,
-                closing_credit=c_cr,
-            )
+        row = TrialBalanceRow(
+            ledger_id=ledger.id,
+            ledger_code=ledger.code,
+            ledger_name=ledger.name,
+            group_id=ledger.group_id,
+            group_name=ledger.group.name,
+            nature=AccountNature(_enum_value(ledger.group.nature)),
+            opening_debit=o_dr,
+            opening_credit=o_cr,
+            period_debit=p_dr,
+            period_credit=p_cr,
+            closing_debit=c_dr,
+            closing_credit=c_cr,
         )
+        rows.append(row)
+        _accumulate(row)
 
-        g_entry = group_acc.setdefault(
-            ledger.group_id,
-            {
-                "group_id": ledger.group_id,
-                "group_name": ledger.group.name,
-                "nature": AccountNature(ledger.group.nature),
-                "opening_debit": ZERO,
-                "opening_credit": ZERO,
-                "period_debit": ZERO,
-                "period_credit": ZERO,
-                "closing_debit": ZERO,
-                "closing_credit": ZERO,
-            },
+    if retained_signed != ZERO:
+        r_dr, r_cr = _to_dr_cr_columns(retained_signed)
+        row = TrialBalanceRow(
+            ledger_id=0, ledger_code=RETAINED_EARNINGS_CODE, ledger_name=RETAINED_EARNINGS_LABEL,
+            group_id=0, group_name="Reserves & Surplus", nature=AccountNature.EQUITY,
+            opening_debit=r_dr, opening_credit=r_cr, period_debit=ZERO, period_credit=ZERO,
+            closing_debit=r_dr, closing_credit=r_cr,
         )
-        g_entry["opening_debit"] += o_dr
-        g_entry["opening_credit"] += o_cr
-        g_entry["period_debit"] += p_dr
-        g_entry["period_credit"] += p_cr
-        g_entry["closing_debit"] += c_dr
-        g_entry["closing_credit"] += c_cr
+        rows.append(row)
+        _accumulate(row)
 
-    groups = [TrialBalanceGroupSummary(**val) for val in group_acc.values()]
-    difference = abs(tot_close_dr - tot_close_cr)
-
+    difference = abs(tot["closing_debit"] - tot["closing_credit"])
     return TrialBalanceReportRead(
         from_date=eff_from,
         to_date=eff_to,
         rows=rows,
-        groups=groups,
-        total_opening_debit=tot_open_dr,
-        total_opening_credit=tot_open_cr,
-        total_period_debit=tot_period_dr,
-        total_period_credit=tot_period_cr,
-        total_debit=tot_close_dr,
-        total_credit=tot_close_cr,
+        groups=[TrialBalanceGroupSummary(**v) for v in group_acc.values()],
+        total_opening_debit=tot["opening_debit"],
+        total_opening_credit=tot["opening_credit"],
+        total_period_debit=tot["period_debit"],
+        total_period_credit=tot["period_credit"],
+        total_debit=tot["closing_debit"],
+        total_credit=tot["closing_credit"],
         difference=difference,
         is_balanced=difference == ZERO,
     )
@@ -1015,9 +1199,14 @@ async def get_profit_loss(
     from_date: date | None = None,
     to_date: date | None = None,
 ) -> ProfitLossReportRead:
-    company, fy = await get_active_company_and_fy(db, company_id)
-    eff_from = from_date or fy.start_date
-    eff_to = to_date or fy.end_date
+    company, default_fy = await get_active_company_and_fy(db, company_id, from_date)
+    eff_from = from_date or default_fy.start_date
+    eff_to = to_date or default_fy.end_date
+    if eff_from > eff_to:
+        raise InvalidVoucherError("from_date must be on or before to_date.")
+    books_start = await _books_beginning_date(db, company)
+
+    include_nominal_opening = eff_from <= books_start <= eff_to
 
     ledgers_stmt = (
         select(Ledger)
@@ -1025,10 +1214,7 @@ async def get_profit_loss(
         .options(selectinload(Ledger.group))
         .where(
             Ledger.company_id == company.id,
-            Ledger.is_active.is_(True),
-            AccountGroup.nature.in_(
-                [AccountNature.INCOME.value, AccountNature.EXPENSE.value]
-            ),
+            AccountGroup.nature.in_([AccountNature.INCOME.value, AccountNature.EXPENSE.value]),
         )
         .order_by(AccountGroup.display_order.asc(), Ledger.code.asc())
     )
@@ -1037,74 +1223,41 @@ async def get_profit_loss(
         db, company.id, from_date=eff_from, to_date=eff_to
     )
 
-    direct_income: list[StatementLineItem] = []
-    direct_expenses: list[StatementLineItem] = []
-    indirect_income: list[StatementLineItem] = []
-    indirect_expenses: list[StatementLineItem] = []
-
-    tot_direct_inc = ZERO
-    tot_direct_exp = ZERO
-    tot_indirect_inc = ZERO
-    tot_indirect_exp = ZERO
+    buckets: dict[tuple[str, bool], list[StatementLineItem]] = defaultdict(list)
+    totals: dict[tuple[str, bool], Decimal] = defaultdict(lambda: ZERO)
 
     for ledger in ledgers:
-        dr, cr = period_sums.get(ledger.id, (ZERO, ZERO))
-        # Include opening balance only when report starts at FY start
-        open_s = _opening_signed(ledger) if eff_from == fy.start_date else ZERO
-        closing_signed = open_s + dr - cr
-
-        if ledger.group.nature == AccountNature.INCOME.value:
-            # Credit-normal income
-            amt = -closing_signed
-            if amt == ZERO:
-                continue
-            item = StatementLineItem(
-                ledger_id=ledger.id,
-                ledger_code=ledger.code,
-                ledger_name=ledger.name,
-                group_name=ledger.group.name,
-                amount=amt,
+        open_s = _opening_signed(ledger) if include_nominal_opening else ZERO
+        signed = open_s + _net(period_sums, ledger.id)
+        nature = _enum_value(ledger.group.nature)
+        amt = -signed if nature == AccountNature.INCOME.value else signed
+        if amt == ZERO:
+            continue
+        key = (nature, bool(ledger.group.affects_gross_profit))
+        buckets[key].append(
+            StatementLineItem(
+                ledger_id=ledger.id, ledger_code=ledger.code, ledger_name=ledger.name,
+                group_name=ledger.group.name, amount=amt,
             )
-            if ledger.group.affects_gross_profit:
-                direct_income.append(item)
-                tot_direct_inc += amt
-            else:
-                indirect_income.append(item)
-                tot_indirect_inc += amt
-        else:
-            # Debit-normal expense
-            amt = closing_signed
-            if amt == ZERO:
-                continue
-            item = StatementLineItem(
-                ledger_id=ledger.id,
-                ledger_code=ledger.code,
-                ledger_name=ledger.name,
-                group_name=ledger.group.name,
-                amount=amt,
-            )
-            if ledger.group.affects_gross_profit:
-                direct_expenses.append(item)
-                tot_direct_exp += amt
-            else:
-                indirect_expenses.append(item)
-                tot_indirect_exp += amt
+        )
+        totals[key] += amt
 
-    gross_profit = tot_direct_inc - tot_direct_exp
-    net_profit = gross_profit + tot_indirect_inc - tot_indirect_exp
+    inc, exp = AccountNature.INCOME.value, AccountNature.EXPENSE.value
+    gross_profit = totals[(inc, True)] - totals[(exp, True)]
+    net_profit = gross_profit + totals[(inc, False)] - totals[(exp, False)]
 
     return ProfitLossReportRead(
         from_date=eff_from,
         to_date=eff_to,
-        direct_income=direct_income,
-        direct_expenses=direct_expenses,
-        total_direct_income=tot_direct_inc,
-        total_direct_expenses=tot_direct_exp,
+        direct_income=buckets[(inc, True)],
+        direct_expenses=buckets[(exp, True)],
+        total_direct_income=totals[(inc, True)],
+        total_direct_expenses=totals[(exp, True)],
         gross_profit=gross_profit,
-        indirect_income=indirect_income,
-        indirect_expenses=indirect_expenses,
-        total_indirect_income=tot_indirect_inc,
-        total_indirect_expenses=tot_indirect_exp,
+        indirect_income=buckets[(inc, False)],
+        indirect_expenses=buckets[(exp, False)],
+        total_indirect_income=totals[(inc, False)],
+        total_indirect_expenses=totals[(exp, False)],
         net_profit=net_profit,
     )
 
@@ -1115,93 +1268,104 @@ async def get_balance_sheet(
     company_id: int | None = None,
     as_of_date: date | None = None,
 ) -> BalanceSheetReportRead:
-    company, fy = await get_active_company_and_fy(db, company_id)
-    eff_as_of = as_of_date or fy.end_date
+    company, default_fy = await get_active_company_and_fy(db, company_id, as_of_date)
+    eff_as_of = as_of_date or default_fy.end_date
+    fy = await _fy_for_date(db, company.id, eff_as_of)
+    if fy is None:
+        raise ResourceNotFoundError(f"No fiscal year covers {eff_as_of.isoformat()}.")
+    books_start = await _books_beginning_date(db, company)
+    if eff_as_of < books_start:
+        raise InvalidVoucherError("as_of_date is before the books-beginning date.")
 
     ledgers_stmt = (
         select(Ledger)
         .join(AccountGroup, Ledger.group_id == AccountGroup.id)
         .options(selectinload(Ledger.group))
-        .where(Ledger.company_id == company.id, Ledger.is_active.is_(True))
+        .where(Ledger.company_id == company.id)
         .order_by(AccountGroup.display_order.asc(), Ledger.code.asc())
     )
     ledgers = list((await db.execute(ledgers_stmt)).scalars().all())
-    posted_sums = await _fetch_posted_sums_by_ledger(
-        db, company.id, to_date=eff_as_of
+
+    to_date_sums = await _fetch_posted_sums_by_ledger(db, company.id, to_date=eff_as_of)
+    current_sums = await _fetch_posted_sums_by_ledger(
+        db, company.id, from_date=fy.start_date, to_date=eff_as_of
     )
+    prior_sums = await _fetch_posted_sums_by_ledger(db, company.id, before_date=fy.start_date)
 
-    asset_groups: dict[int, BalanceSheetSectionGroup] = {}
-    liability_groups: dict[int, BalanceSheetSectionGroup] = {}
-    equity_groups: dict[int, BalanceSheetSectionGroup] = {}
+    sections: dict[str, dict[int | str, BalanceSheetSectionGroup]] = {
+        AccountNature.ASSET.value: {}, AccountNature.LIABILITY.value: {}, AccountNature.EQUITY.value: {},
+    }
+    totals = defaultdict(lambda: ZERO)
+    current_np = ZERO
+    retained_bf = ZERO
+    opening_difference = ZERO
 
-    total_assets = ZERO
-    total_liabilities = ZERO
-    total_equity = ZERO
-    net_profit = ZERO
+    def _place(section: str, gkey: int | str, gname: str, item: StatementLineItem) -> None:
+        grp = sections[section].get(gkey)
+        if grp is None:
+            grp = BalanceSheetSectionGroup(
+                group_id=gkey if isinstance(gkey, int) else 0, group_name=gname,
+                nature=AccountNature(section), total=ZERO, ledgers=[],
+            )
+            sections[section][gkey] = grp
+        grp.total += item.amount
+        grp.ledgers.append(item)
+        totals[section] += item.amount
 
     for ledger in ledgers:
-        dr, cr = posted_sums.get(ledger.id, (ZERO, ZERO))
-        closing_signed = _opening_signed(ledger) + dr - cr
-        nature = AccountNature(ledger.group.nature)
+        op = _opening_signed(ledger)
+        opening_difference += op
+        nature = _enum_value(ledger.group.nature)
 
-        # Accumulate exact Income - Expense into Current Period Net Profit/Loss
-        if nature == AccountNature.INCOME:
-            net_profit += -closing_signed
-            continue
-        if nature == AccountNature.EXPENSE:
-            net_profit -= closing_signed
+        if nature in NOMINAL_NATURES:
+            cur = (op if fy.start_date <= books_start <= eff_as_of else ZERO) + _net(current_sums, ledger.id)
+            prior = _nominal_opening_prior(ledger, books_start, fy) + _net(prior_sums, ledger.id)
+            current_np -= cur
+            retained_bf -= prior
             continue
 
+        closing_signed = op + _net(to_date_sums, ledger.id)
         if closing_signed == ZERO:
             continue
 
-        if nature == AccountNature.ASSET:
-            # Debit-normal Asset
-            amt = closing_signed
-            total_assets += amt
-            target = asset_groups
-        elif nature == AccountNature.LIABILITY:
-            # Credit-normal Liability
-            amt = -closing_signed
-            total_liabilities += amt
-            target = liability_groups
-        else:
-            # Credit-normal Equity
-            amt = -closing_signed
-            total_equity += amt
-            target = equity_groups
+        section = nature if nature in sections else AccountNature.EQUITY.value
+        amt = closing_signed if section == AccountNature.ASSET.value else -closing_signed
+        gkey: int | str = ledger.group_id
+        gname = ledger.group.name
 
-        grp = target.get(ledger.group_id)
-        if grp is None:
-            grp = BalanceSheetSectionGroup(
-                group_id=ledger.group_id,
-                group_name=ledger.group.name,
-                nature=nature,
-                total=ZERO,
-                ledgers=[],
+        reclass_name = RECLASSIFY_OPPOSITE_BALANCE_GROUPS.get(ledger.group.name)
+        if reclass_name and amt < ZERO and section in (AccountNature.ASSET.value, AccountNature.LIABILITY.value):
+            section = (
+                AccountNature.LIABILITY.value if section == AccountNature.ASSET.value else AccountNature.ASSET.value
             )
-            target[ledger.group_id] = grp
+            amt = -amt
+            gkey, gname = f"reclass:{ledger.group_id}", reclass_name
 
-        grp.total += amt
-        grp.ledgers.append(
-            StatementLineItem(
-                ledger_id=ledger.id,
-                ledger_code=ledger.code,
-                ledger_name=ledger.name,
-                group_name=ledger.group.name,
-                amount=amt,
-            )
-        )
+        _place(section, gkey, gname, StatementLineItem(
+            ledger_id=ledger.id, ledger_code=ledger.code, ledger_name=ledger.name,
+            group_name=gname, amount=amt,
+        ))
 
-    total_liab_and_eq = total_liabilities + total_equity + net_profit
+    if retained_bf != ZERO:
+        _place(AccountNature.EQUITY.value, "retained", "Reserves & Surplus", StatementLineItem(
+            ledger_id=0, ledger_code=RETAINED_EARNINGS_CODE, ledger_name=RETAINED_EARNINGS_LABEL,
+            group_name="Reserves & Surplus", amount=retained_bf,
+        ))
+
+    total_assets = totals[AccountNature.ASSET.value]
+    total_liabilities = totals[AccountNature.LIABILITY.value]
+    total_equity = totals[AccountNature.EQUITY.value]
+    total_liab_and_eq = total_liabilities + total_equity + current_np
     difference = abs(total_assets - total_liab_and_eq)
 
     return BalanceSheetReportRead(
         as_of_date=eff_as_of,
-        assets=list(asset_groups.values()),
-        liabilities=list(liability_groups.values()),
-        equity=list(equity_groups.values()),
-        current_period_net_profit=net_profit,
+        assets=list(sections[AccountNature.ASSET.value].values()),
+        liabilities=list(sections[AccountNature.LIABILITY.value].values()),
+        equity=list(sections[AccountNature.EQUITY.value].values()),
+        current_period_net_profit=current_np,
+        retained_earnings_brought_forward=retained_bf,
+        opening_balance_difference=opening_difference,
         total_assets=total_assets,
         total_liabilities=total_liabilities,
         total_equity=total_equity,
@@ -1219,7 +1383,7 @@ async def get_dashboard_kpis(
     ledgers_stmt = (
         select(Ledger)
         .options(selectinload(Ledger.group))
-        .where(Ledger.company_id == company.id, Ledger.is_active.is_(True))
+        .where(Ledger.company_id == company.id)
     )
     ledgers = list((await db.execute(ledgers_stmt)).scalars().all())
     posted_sums = await _fetch_posted_sums_by_ledger(db, company.id)
@@ -1248,7 +1412,6 @@ async def get_dashboard_kpis(
         elif gname == "Duties & Taxes":
             duties_signed += closing_signed
 
-    # Count vouchers by status
     count_stmt = (
         select(Voucher.status, func.count(Voucher.id))
         .where(Voucher.company_id == company.id)

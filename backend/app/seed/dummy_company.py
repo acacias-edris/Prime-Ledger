@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import date
 from decimal import Decimal
 
@@ -17,6 +18,7 @@ from app.models.ledger import (
     Ledger,
     Voucher,
     VoucherLine,
+    VoucherSequence,
     VoucherStatus,
     VoucherType,
 )
@@ -429,6 +431,7 @@ async def seed_dummy_company(db: AsyncSession) -> dict[str, int]:
             )
             for l_code, dr, cr, l_narr in vdef["lines"]
         ]
+        # Two-phase post (DRAFT -> flush lines -> POSTED) so DB integrity triggers succeed
         voucher = Voucher(
             company_id=company.id,
             fiscal_year_id=fy.id,
@@ -437,11 +440,59 @@ async def seed_dummy_company(db: AsyncSession) -> dict[str, int]:
             voucher_date=vdef["voucher_date"],
             reference_no=vdef["reference_no"],
             narration=vdef["narration"],
-            status=VoucherStatus.POSTED.value,
+            status=VoucherStatus.DRAFT.value,
             lines=lines,
         )
         db.add(voucher)
+        await db.flush()
+        voucher.status = VoucherStatus.POSTED.value
+        await db.flush()
         vouchers_created += 1
+
+    # Sync gapless VoucherSequence counters with all auto-numbered vouchers in this FY
+    seq_pat = re.compile(r"^[A-Z]+/\d{2}-\d{2}/([0-9]+)$")
+    all_fy_vouchers = (
+        await db.execute(
+            select(Voucher.voucher_type, Voucher.voucher_number).where(
+                Voucher.company_id == company.id,
+                Voucher.fiscal_year_id == fy.id,
+            )
+        )
+    ).all()
+    max_seq_by_type: dict[str, int] = {}
+    for vtype, vno in all_fy_vouchers:
+        match = seq_pat.match(vno or "")
+        if match:
+            seq_num = int(match.group(1))
+            if seq_num >= 1:
+                max_seq_by_type[vtype] = max(max_seq_by_type.get(vtype, 0), seq_num)
+
+    existing_seqs = {
+        row.voucher_type: row
+        for row in (
+            await db.execute(
+                select(VoucherSequence).where(
+                    VoucherSequence.company_id == company.id,
+                    VoucherSequence.fiscal_year_id == fy.id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    }
+    for vtype, max_val in max_seq_by_type.items():
+        seq_row = existing_seqs.get(vtype)
+        if seq_row is None:
+            db.add(
+                VoucherSequence(
+                    company_id=company.id,
+                    fiscal_year_id=fy.id,
+                    voucher_type=vtype,
+                    last_value=max_val,
+                )
+            )
+        elif seq_row.last_value < max_val:
+            seq_row.last_value = max_val
 
     await db.commit()
     return {

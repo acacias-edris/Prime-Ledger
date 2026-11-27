@@ -67,7 +67,7 @@ class LedgerCreate(BaseModel):
     group_id: int
     code: str = Field(min_length=1, max_length=32)
     name: str = Field(min_length=1, max_length=160)
-    opening_balance: MoneyInput = ZERO
+    opening_balance: MoneyInput = Field(default=ZERO, ge=0)
     opening_dr_cr: DrCr = DrCr.DR
     party_gstin: str | None = Field(default=None, max_length=32)
     party_state_code: str | None = Field(default=None, max_length=8)
@@ -163,6 +163,7 @@ class VoucherCreate(BaseModel):
 class VoucherCancelRequest(BaseModel):
     create_reversal: bool = False
     reason: str | None = Field(default=None, max_length=255)
+    reversal_date: date | None = None
 
 
 class VoucherLineRead(BaseModel):
@@ -348,6 +349,8 @@ class BalanceSheetReportRead(BaseModel):
     liabilities: list[BalanceSheetSectionGroup]
     equity: list[BalanceSheetSectionGroup]
     current_period_net_profit: MoneyStr
+    retained_earnings_brought_forward: MoneyStr = ZERO
+    opening_balance_difference: MoneyStr = ZERO
     total_assets: MoneyStr
     total_liabilities: MoneyStr
     total_equity: MoneyStr

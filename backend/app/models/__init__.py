@@ -6,6 +6,7 @@ from app.models.ledger import (
     Ledger,
     Voucher,
     VoucherLine,
+    VoucherSequence,
     VoucherStatus,
     VoucherType,
 )
@@ -19,6 +20,7 @@ __all__ = [
     "Ledger",
     "Voucher",
     "VoucherLine",
+    "VoucherSequence",
     "VoucherStatus",
     "VoucherType",
 ]
