@@ -43,6 +43,10 @@ interface PaletteItem {
 
 const WORKSPACE_COMMANDS = [
   { id: 'dashboard', label: 'Financial Command Center', meta: 'Dashboard' },
+  { id: 'invoices', label: 'GST Invoice Register', meta: 'Sales · Purchase · CN/DN' },
+  { id: 'new-sale', label: 'New GST Sales Invoice (F8)', meta: 'Invoice Builder' },
+  { id: 'new-purchase', label: 'New GST Purchase Bill (F9)', meta: 'Invoice Builder' },
+  { id: 'inventory', label: 'Inventory & Stock Summary (FIFO/WAC)', meta: 'Godowns · Lots' },
   { id: 'coa', label: 'Chart of Accounts (28 Tally Groups)', meta: 'Masters · Live' },
   { id: 'daybook', label: 'Day Book & Voucher Register', meta: 'Register · Live' },
   { id: 'ledger-statement', label: 'Ledger Account Statement', meta: 'Running Balance' },

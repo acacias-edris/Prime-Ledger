@@ -279,18 +279,27 @@ export interface BalanceSheetReportDTO {
 export class ApiError extends Error {
   readonly status: number
   readonly errorCode?: string
+  readonly details?: Record<string, unknown>
 
-  constructor(message: string, status: number, errorCode?: string) {
+  constructor(
+    message: string,
+    status: number,
+    errorCode?: string,
+    details?: Record<string, unknown>,
+  ) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.errorCode = errorCode
+    this.details = details
   }
 }
 
 const API_BASE = '/api/v1'
 
-function buildQuery(params: Record<string, string | number | boolean | undefined | null>): string {
+export function buildQuery(
+  params: Record<string, string | number | boolean | undefined | null>,
+): string {
   const qs = new URLSearchParams()
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== null && v !== '') {
@@ -301,7 +310,7 @@ function buildQuery(params: Record<string, string | number | boolean | undefined
   return encoded ? `?${encoded}` : ''
 }
 
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+export async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers: {
@@ -313,15 +322,18 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     let message = `Request failed (${res.status})`
     let errorCode: string | undefined
+    let details: Record<string, unknown> | undefined
     try {
       const payload = (await res.json()) as {
         message?: string
         error_code?: string
+        details?: Record<string, unknown>
         detail?: string | Array<{ msg?: string; loc?: Array<string | number> }>
       }
       if (payload.message) {
         message = payload.message
         errorCode = payload.error_code
+        details = payload.details
       } else if (typeof payload.detail === 'string') {
         message = payload.detail
       } else if (Array.isArray(payload.detail) && payload.detail.length > 0) {
@@ -330,7 +342,7 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       // Fall back to HTTP status text
     }
-    throw new ApiError(message, res.status, errorCode)
+    throw new ApiError(message, res.status, errorCode, details)
   }
 
   return (await res.json()) as T

@@ -10,8 +10,11 @@ from sqlalchemy.exc import OperationalError
 
 from app.core.config import get_settings
 from app.core.database import engine
+from app.modules.inventory.router import router as inventory_router
+from app.modules.invoicing.router import router as invoicing_router
 from app.modules.ledger.exceptions import AccountingError
 from app.modules.ledger.router import router as ledger_router
+from app.modules.tax_india.router import router as tax_india_router
 
 settings = get_settings()
 
@@ -82,3 +85,6 @@ async def health_check() -> dict[str, str]:
 
 
 app.include_router(ledger_router)
+app.include_router(tax_india_router)
+app.include_router(inventory_router)
+app.include_router(invoicing_router)

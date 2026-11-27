@@ -241,7 +241,7 @@
 @media print {
   @page {
     size: A4 portrait;
-    margin: 8mm;
+    margin: 12mm;
   }
 
   html,
@@ -254,6 +254,11 @@
 
   .no-print {
     display: none !important;
+  }
+
+  .print-keep-together {
+    break-inside: avoid;
+    page-break-inside: avoid;
   }
 
   thead {

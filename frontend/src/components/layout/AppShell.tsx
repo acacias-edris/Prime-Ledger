@@ -6,6 +6,7 @@ import {
   Building2,
   ChevronDown,
   FileCheck2,
+  FilePlus2,
   FileSpreadsheet,
   FileText,
   HelpCircle,
@@ -18,8 +19,10 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
+  Receipt,
   Scale,
   Search,
+  ShoppingBag,
   Sun,
   TrendingUp,
   X,
@@ -40,6 +43,7 @@ export interface NavItem {
   label: string
   section: 'core' | 'upcoming'
   milestoneTag?: string
+  shortcut?: string
   icon: ReactNode
 }
 
@@ -49,6 +53,32 @@ const APP_NAV_ITEMS: readonly NavItem[] = [
     label: 'Dashboard',
     section: 'core',
     icon: <LayoutDashboard className="h-[18px] w-[18px] shrink-0" strokeWidth={1.75} aria-hidden="true" />,
+  },
+  {
+    id: 'invoices',
+    label: 'Invoices',
+    section: 'core',
+    icon: <Receipt className="h-[18px] w-[18px] shrink-0" strokeWidth={1.75} aria-hidden="true" />,
+  },
+  {
+    id: 'new-sale',
+    label: 'New Sale',
+    section: 'core',
+    shortcut: 'F8',
+    icon: <FilePlus2 className="h-[18px] w-[18px] shrink-0" strokeWidth={1.75} aria-hidden="true" />,
+  },
+  {
+    id: 'new-purchase',
+    label: 'New Purchase',
+    section: 'core',
+    shortcut: 'F9',
+    icon: <ShoppingBag className="h-[18px] w-[18px] shrink-0" strokeWidth={1.75} aria-hidden="true" />,
+  },
+  {
+    id: 'inventory',
+    label: 'Inventory',
+    section: 'core',
+    icon: <Package className="h-[18px] w-[18px] shrink-0" strokeWidth={1.75} aria-hidden="true" />,
   },
   {
     id: 'coa',
@@ -87,13 +117,6 @@ const APP_NAV_ITEMS: readonly NavItem[] = [
     icon: <FileSpreadsheet className="h-[18px] w-[18px] shrink-0" strokeWidth={1.75} aria-hidden="true" />,
   },
   {
-    id: 'inventory',
-    label: 'Inventory',
-    section: 'upcoming',
-    milestoneTag: 'M3',
-    icon: <Package className="h-[18px] w-[18px] shrink-0" strokeWidth={1.75} aria-hidden="true" />,
-  },
-  {
     id: 'banking',
     label: 'Banking & BRS',
     section: 'upcoming',
@@ -127,6 +150,7 @@ export interface AppShellProps {
   onOpenShortcutSheet: () => void
   mobileNavOpen: boolean
   onSetMobileNavOpen: (open: boolean) => void
+  hidePrintLetterhead?: boolean
   children: ReactNode
 }
 
@@ -141,6 +165,7 @@ export function AppShell({
   onOpenShortcutSheet,
   mobileNavOpen,
   onSetMobileNavOpen,
+  hidePrintLetterhead = false,
   children,
 }: AppShellProps) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
@@ -196,7 +221,9 @@ export function AppShell({
           </span>
           {showLabel ? <span className="truncate">{item.label}</span> : null}
         </span>
-        {showLabel && item.milestoneTag ? (
+        {showLabel && item.shortcut ? (
+          <Kbd>{item.shortcut}</Kbd>
+        ) : showLabel && item.milestoneTag ? (
           <span className="code-mono text-[10px] font-semibold uppercase text-disabled-text">
             {item.milestoneTag}
           </span>
@@ -240,7 +267,7 @@ export function AppShell({
                   LedgerPrime
                 </p>
                 <p className="truncate font-mono text-[11px] text-muted-text">
-                  v0.2 · Live Books
+                  v0.3 · GST &amp; Stock
                 </p>
               </div>
             </div>
@@ -481,23 +508,25 @@ export function AppShell({
         </header>
 
         {/* Print-Only Statutory Letterhead */}
-        <div className="hidden print:block border-b-2 border-border-strong px-2 pb-3 mb-4">
-          <div className="flex items-baseline justify-between">
-            <div>
-              <h1 className="text-[18px] font-bold text-primary-text">{companyName}</h1>
-              <p className="code-mono text-[12px] text-muted-text">
-                GSTIN: {gstin} · {stateLabel}
-              </p>
-            </div>
-            <div className="text-right code-mono text-[12px] text-muted-text">
-              <p>{fyLabel}</p>
-              <p>Generated from LedgerPrime</p>
+        {!hidePrintLetterhead ? (
+          <div className="hidden print:block border-b-2 border-border-strong px-2 pb-3 mb-4">
+            <div className="flex items-baseline justify-between">
+              <div>
+                <h1 className="text-[18px] font-bold text-primary-text">{companyName}</h1>
+                <p className="code-mono text-[12px] text-muted-text">
+                  GSTIN: {gstin} · {stateLabel}
+                </p>
+              </div>
+              <div className="text-right code-mono text-[12px] text-muted-text">
+                <p>{fyLabel}</p>
+                <p>Generated from LedgerPrime</p>
+              </div>
             </div>
           </div>
-        </div>
+        ) : null}
 
         {/* Workspace Canvas */}
-        <main className="w-full max-w-[1360px] flex-1 px-4 py-4 pb-24 md:px-6 md:py-6 md:pb-6">
+        <main className="w-full max-w-[1360px] flex-1 px-4 py-4 pb-24 md:px-6 md:py-6 md:pb-6 print:max-w-none print:p-0">
           {children}
         </main>
 

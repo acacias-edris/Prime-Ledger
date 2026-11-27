@@ -41,8 +41,11 @@ async def read_active_company(
 async def read_account_groups(
     db: Annotated[AsyncSession, Depends(get_db)],
     company_id: Annotated[int | None, Query(ge=1)] = None,
+    as_of_date: Annotated[date | None, Query()] = None,
 ) -> list[AccountGroupRead]:
-    return await service.list_account_groups(db, company_id=company_id)
+    return await service.list_account_groups(
+        db, company_id=company_id, as_of_date=as_of_date
+    )
 
 
 @router.get("/ledgers", response_model=list[LedgerRead])
@@ -52,6 +55,7 @@ async def read_ledgers(
     group_id: Annotated[int | None, Query(ge=1)] = None,
     nature: Annotated[AccountNature | None, Query()] = None,
     search: Annotated[str | None, Query(max_length=120)] = None,
+    as_of_date: Annotated[date | None, Query()] = None,
 ) -> list[LedgerRead]:
     return await service.list_ledgers(
         db,
@@ -59,6 +63,7 @@ async def read_ledgers(
         group_id=group_id,
         nature=nature,
         search=search,
+        as_of_date=as_of_date,
     )
 
 
@@ -123,6 +128,7 @@ async def cancel_voucher_endpoint(
         req = VoucherCancelRequest(
             create_reversal=create_reversal,
             reason=req.reason,
+            reversal_date=req.reversal_date,
         )
     return await service.cancel_voucher(db, voucher_id, req, company_id=company_id)
 
@@ -210,9 +216,11 @@ async def read_balance_sheet(
     db: Annotated[AsyncSession, Depends(get_db)],
     company_id: Annotated[int | None, Query(ge=1)] = None,
     as_of_date: Annotated[date | None, Query()] = None,
+    from_date: Annotated[date | None, Query()] = None,
 ) -> BalanceSheetReportRead:
     return await service.get_balance_sheet(
         db,
         company_id=company_id,
         as_of_date=as_of_date,
+        from_date=from_date,
     )

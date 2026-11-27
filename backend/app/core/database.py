@@ -1,17 +1,5 @@
 from __future__ import annotations
 
-# LedgerPrime -- database.py (Milestone 2 -- PATCHED, independent review)
-#
-# PATCH(Q3) summary
-#   1. BEGIN IMMEDIATE (default) instead of deferred BEGIN.
-#      Every service write path is read-then-write (company/FY/ledger SELECTs, then INSERT).
-#      Under WAL + deferred BEGIN, the read->write upgrade fails IMMEDIATELY with
-#      "database is locked" (SQLITE_BUSY / BUSY_SNAPSHOT) -- busy_timeout is NOT consulted.
-#   2. synchronous=FULL. With WAL+NORMAL a power cut can roll back the last committed
-#      transactions -> a voucher number already printed/emailed (GST invoice) is re-issued.
-#   3. Opt-out for long read-only reports:  await session.connection(
-#          execution_options={"sqlite_begin": "DEFERRED"})  before the first statement.
-
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -53,7 +41,6 @@ def build_async_engine(database_url: str, *, echo: bool = False) -> AsyncEngine:
         kwargs["max_overflow"] = 10
         kwargs["pool_pre_ping"] = True
     else:
-        # sqlite3's own busy handler (seconds); kept equal to the PRAGMA for clarity.
         kwargs["connect_args"] = {"timeout": SQLITE_BUSY_TIMEOUT_MS / 1000}
 
     async_engine = create_async_engine(database_url, **kwargs)
@@ -62,25 +49,35 @@ def build_async_engine(database_url: str, *, echo: bool = False) -> AsyncEngine:
 
         @event.listens_for(async_engine.sync_engine, "connect")
         def _set_sqlite_pragmas(dbapi_conn, _connection_record) -> None:
-            # Disable pysqlite/aiosqlite implicit BEGIN (SQLAlchemy aiosqlite docs pattern)
             dbapi_conn.isolation_level = None
             cursor = dbapi_conn.cursor()
+            # busy_timeout MUST run first so journal_mode=WAL never fails with SQLITE_BUSY.
+            cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS};")
             cursor.execute("PRAGMA journal_mode=WAL;")
             cursor.execute("PRAGMA synchronous=FULL;")
-            cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS};")
             cursor.execute("PRAGMA foreign_keys=ON;")
             cursor.close()
 
         @event.listens_for(async_engine.sync_engine, "begin")
         def _do_sqlite_begin(conn) -> None:
-            # Take the RESERVED/WAL write lock at BEGIN so busy_timeout applies and
-            # every SELECT inside the transaction sees the latest committed state.
-            mode = str(conn.get_execution_options().get("sqlite_begin", "IMMEDIATE")).upper()
+            # Default DEFERRED preserves WAL concurrent readers; write paths opt into
+            # BEGIN IMMEDIATE via begin_write_transaction(db) before their first SELECT.
+            mode = str(conn.get_execution_options().get("sqlite_begin", "DEFERRED")).upper()
             if mode not in _SQLITE_BEGIN_MODES:
                 raise ValueError(f"Invalid sqlite_begin mode: {mode!r}")
             conn.exec_driver_sql(f"BEGIN {mode}")
 
     return async_engine
+
+
+async def begin_write_transaction(db: AsyncSession) -> None:
+    """
+    Acquire SQLite's RESERVED write lock up-front (BEGIN IMMEDIATE) so busy_timeout
+    applies cleanly and read->write lock upgrades never raise SQLITE_BUSY_SNAPSHOT.
+    Must be called before the first SQL statement in a write workflow.
+    """
+    if db.get_bind().dialect.name == "sqlite" and not db.in_transaction():
+        await db.connection(execution_options={"sqlite_begin": "IMMEDIATE"})
 
 
 settings = get_settings()

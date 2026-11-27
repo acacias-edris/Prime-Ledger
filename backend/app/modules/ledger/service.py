@@ -15,6 +15,7 @@ from collections import defaultdict
 from datetime import date
 from decimal import Decimal
 from enum import Enum
+import re
 
 from sqlalchemy import func, literal, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -23,6 +24,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.database import begin_write_transaction
 from app.core.money import ZERO, MoneyNumeric18_4, quantize_money
 from app.models.company import Company, FiscalYear
 from app.models.ledger import (
@@ -79,9 +81,16 @@ VOUCHER_TYPE_PREFIX: dict[VoucherType, str] = {
     VoucherType.DEBIT_NOTE: "DN",
 }
 
+# CGST Rule 46(b): max 16 chars, alphanumeric plus '-' and '/'
+_GST_VOUCHER_NO_MAX_LEN = 16
+_VOUCHER_NO_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9/-]{0,15}$")
+
 # PATCH(Q1/Q2): nominal (temporary) accounts reset at every FY start; real accounts carry forward.
 NOMINAL_NATURES: frozenset[str] = frozenset(
     {AccountNature.INCOME.value, AccountNature.EXPENSE.value}
+)
+CREDIT_NORMAL_NATURES: frozenset[str] = frozenset(
+    {AccountNature.LIABILITY.value, AccountNature.EQUITY.value, AccountNature.INCOME.value}
 )
 
 # PATCH(Q3): typed literal so the COALESCE fallback is bound THROUGH MoneyNumeric18_4
@@ -92,12 +101,11 @@ _MONEY_ZERO = literal(ZERO, MoneyNumeric18_4())
 RETAINED_EARNINGS_LABEL = "Profit & Loss A/c (Retained Earnings b/f)"
 RETAINED_EARNINGS_CODE = "P&L-BF"
 
-# PATCH(Q1): groups whose OPPOSITE balance must be re-presented on the other side of the
-# Balance Sheet (Schedule III / Ind AS 1 para 32: no offsetting). This is presentation only,
-# totals are unaffected. True contra accounts (Accumulated Depreciation) are NOT listed --
-# they must stay netted inside their parent asset group.
+# PATCH(Q1): Ancestor-aware Schedule III / Ind AS 1 opposite-balance reclassification map.
+# True contra accounts (Accumulated Depreciation, Drawings) are intentionally omitted.
 RECLASSIFY_OPPOSITE_BALANCE_GROUPS: dict[str, str] = {
     "Bank Accounts": "Bank Overdraft (reclassified)",
+    "Bank OD A/c": "Bank Balances - OD Surplus (reclassified)",
     "Sundry Debtors": "Advances from Customers (reclassified)",
     "Sundry Creditors": "Advances to Suppliers (reclassified)",
 }
@@ -124,12 +132,45 @@ def _opening_signed(ledger: Ledger) -> Decimal:
     return bal if side is DrCr.DR else -bal
 
 
-def _split_signed_balance(signed: Decimal) -> tuple[Decimal, DrCr]:
+def _split_signed_balance(
+    signed: Decimal, *, normal_nature: AccountNature | str | None = None
+) -> tuple[Decimal, DrCr]:
     """Converts Debit-positive signed balance into unsigned amount + DR/CR side."""
     q = quantize_money(signed)
-    if q >= ZERO:
+    if q == ZERO:
+        if normal_nature is not None and _enum_value(normal_nature) in CREDIT_NORMAL_NATURES:
+            return ZERO, DrCr.CR
+        return ZERO, DrCr.DR
+    if q > ZERO:
         return q, DrCr.DR
     return abs(q), DrCr.CR
+
+
+def _group_ancestor_names(
+    group_id: int, groups_by_id: dict[int, AccountGroup]
+) -> list[str]:
+    """Walks self -> root parent chain so child groups inherit parent classification rules."""
+    names: list[str] = []
+    seen: set[int] = set()
+    curr_id: int | None = group_id
+    while curr_id is not None and curr_id not in seen:
+        seen.add(curr_id)
+        grp = groups_by_id.get(curr_id)
+        if grp is None:
+            break
+        names.append(grp.name)
+        curr_id = grp.parent_id
+    return names
+
+
+def _resolve_reclass_label(
+    group_id: int, groups_by_id: dict[int, AccountGroup]
+) -> str | None:
+    for name in _group_ancestor_names(group_id, groups_by_id):
+        label = RECLASSIFY_OPPOSITE_BALANCE_GROUPS.get(name)
+        if label:
+            return label
+    return None
 
 
 def _to_dr_cr_columns(signed: Decimal) -> tuple[Decimal, Decimal]:
@@ -166,14 +207,14 @@ def _serialize_voucher(voucher: Voucher) -> VoucherRead:
         )
 
     particulars = lines_out[0].ledger_name if lines_out else "Journal Entry"
-    if voucher.voucher_type in (VoucherType.PURCHASE.value, VoucherType.PAYMENT.value):
-        cr_line = next((ln for ln in lines_out if ln.credit_amount > ZERO), None)
-        if cr_line is not None and voucher.voucher_type == VoucherType.PURCHASE.value:
-            particulars = cr_line.ledger_name
-    elif voucher.voucher_type == VoucherType.RECEIPT.value:
+    if voucher.voucher_type in (VoucherType.PURCHASE.value, VoucherType.RECEIPT.value):
         cr_line = next((ln for ln in lines_out if ln.credit_amount > ZERO), None)
         if cr_line is not None:
             particulars = cr_line.ledger_name
+    elif voucher.voucher_type in (VoucherType.SALES.value, VoucherType.PAYMENT.value):
+        dr_line = next((ln for ln in lines_out if ln.debit_amount > ZERO), None)
+        if dr_line is not None:
+            particulars = dr_line.ledger_name
 
     return VoucherRead(
         id=voucher.id,
@@ -343,8 +384,8 @@ def _map_integrity_error(exc: IntegrityError, voucher_number: str, fy: FiscalYea
         )
     if "ck_vouchers_posted_balanced" in msg:
         return InvalidVoucherError("Database rejected a POSTED voucher whose SUM(Dr) != SUM(Cr).")
-    if "immutable once posted" in msg:
-        return InvalidVoucherError("Lines of a POSTED/CANCELLED voucher are immutable.")
+    if "immutable" in msg or "Cannot delete POSTED" in msg or "posted voucher may only" in msg:
+        return InvalidVoucherError("Posted or cancelled vouchers and their lines are immutable.")
     return InvalidVoucherError("Voucher violates a database integrity constraint.")
 
 
@@ -438,9 +479,13 @@ async def _fetch_posted_sums_by_ledger(
 
 
 async def list_account_groups(
-    db: AsyncSession, company_id: int | None = None
+    db: AsyncSession,
+    company_id: int | None = None,
+    as_of_date: date | None = None,
 ) -> list[AccountGroupRead]:
-    company, _fy = await get_active_company_and_fy(db, company_id)
+    company, fy = await get_active_company_and_fy(db, company_id, as_of_date)
+    eff_as_of = as_of_date or fy.end_date
+    books_start = await _books_beginning_date(db, company)
 
     groups_stmt = (
         select(AccountGroup)
@@ -449,19 +494,30 @@ async def list_account_groups(
     )
     groups = list((await db.execute(groups_stmt)).scalars().all())
 
-    ledgers_stmt = select(Ledger).where(
-        Ledger.company_id == company.id, Ledger.is_active.is_(True)
+    # Include inactive ledgers for balance integrity; count only active ledgers for display.
+    ledgers_stmt = (
+        select(Ledger)
+        .options(selectinload(Ledger.group))
+        .where(Ledger.company_id == company.id)
     )
     ledgers = list((await db.execute(ledgers_stmt)).scalars().all())
-    posted_sums = await _fetch_posted_sums_by_ledger(db, company.id)
+    real_sums = await _fetch_posted_sums_by_ledger(db, company.id, to_date=eff_as_of)
+    nom_sums = await _fetch_posted_sums_by_ledger(
+        db, company.id, from_date=fy.start_date, to_date=eff_as_of
+    )
 
     direct_group_signed: dict[int, Decimal] = defaultdict(lambda: ZERO)
     direct_ledger_counts: dict[int, int] = defaultdict(int)
     for ledger in ledgers:
-        dr, cr = posted_sums.get(ledger.id, (ZERO, ZERO))
-        closing_signed = _opening_signed(ledger) + dr - cr
+        if _is_nominal(ledger):
+            closing_signed = _nominal_opening_in_fy(ledger, books_start, fy) + _net(
+                nom_sums, ledger.id
+            )
+        else:
+            closing_signed = _opening_signed(ledger) + _net(real_sums, ledger.id)
         direct_group_signed[ledger.group_id] += closing_signed
-        direct_ledger_counts[ledger.group_id] += 1
+        if ledger.is_active:
+            direct_ledger_counts[ledger.group_id] += 1
 
     # Roll up child groups into parents recursively
     children_map: dict[int | None, list[int]] = defaultdict(list)
@@ -487,7 +543,7 @@ async def list_account_groups(
     output: list[AccountGroupRead] = []
     for grp in groups:
         signed_bal, count = _rollup(grp.id)
-        abs_bal, side = _split_signed_balance(signed_bal)
+        abs_bal, side = _split_signed_balance(signed_bal, normal_nature=grp.nature)
         output.append(
             AccountGroupRead(
                 id=grp.id,
@@ -514,8 +570,11 @@ async def list_ledgers(
     group_id: int | None = None,
     nature: AccountNature | None = None,
     search: str | None = None,
+    as_of_date: date | None = None,
 ) -> list[LedgerRead]:
-    company, _fy = await get_active_company_and_fy(db, company_id)
+    company, fy = await get_active_company_and_fy(db, company_id, as_of_date)
+    eff_as_of = as_of_date or fy.end_date
+    books_start = await _books_beginning_date(db, company)
 
     stmt = (
         select(Ledger)
@@ -539,13 +598,20 @@ async def list_ledgers(
         )
 
     ledgers = list((await db.execute(stmt)).scalars().all())
-    posted_sums = await _fetch_posted_sums_by_ledger(db, company.id)
+    real_sums = await _fetch_posted_sums_by_ledger(db, company.id, to_date=eff_as_of)
+    nom_sums = await _fetch_posted_sums_by_ledger(
+        db, company.id, from_date=fy.start_date, to_date=eff_as_of
+    )
 
     result: list[LedgerRead] = []
     for ledger in ledgers:
-        dr, cr = posted_sums.get(ledger.id, (ZERO, ZERO))
-        closing_signed = _opening_signed(ledger) + dr - cr
-        abs_bal, side = _split_signed_balance(closing_signed)
+        if _is_nominal(ledger):
+            closing_signed = _nominal_opening_in_fy(ledger, books_start, fy) + _net(
+                nom_sums, ledger.id
+            )
+        else:
+            closing_signed = _opening_signed(ledger) + _net(real_sums, ledger.id)
+        abs_bal, side = _split_signed_balance(closing_signed, normal_nature=ledger.group.nature)
         result.append(
             LedgerRead(
                 id=ledger.id,
@@ -574,7 +640,9 @@ async def create_ledger(
     payload: LedgerCreate,
     company_id: int | None = None,
 ) -> LedgerRead:
-    company, _fy = await get_active_company_and_fy(db, company_id)
+    await begin_write_transaction(db)
+    company = await _get_company(db, company_id)
+    await _acquire_company_write_lock(db, company.id)
 
     group = await db.get(AccountGroup, payload.group_id)
     if group is None or group.company_id != company.id:
@@ -611,9 +679,18 @@ async def create_ledger(
         raise DuplicateResourceError(
             f"A ledger with code '{ledger.code}' or name '{ledger.name}' already exists."
         ) from exc
+    except OperationalError as exc:
+        await db.rollback()
+        if _is_sqlite_busy(exc):
+            raise ConcurrencyConflictError(
+                "Ledger master is busy with another write; please retry."
+            ) from exc
+        raise
 
     await db.refresh(ledger, attribute_names=["group"])
-    abs_bal, side = _split_signed_balance(_opening_signed(ledger))
+    abs_bal, side = _split_signed_balance(
+        _opening_signed(ledger), normal_nature=ledger.group.nature
+    )
     return LedgerRead(
         id=ledger.id,
         company_id=ledger.company_id,
@@ -644,7 +721,17 @@ async def create_voucher(
     payload: VoucherCreate,
     company_id: int | None = None,
 ) -> VoucherRead:
+    if payload.status == VoucherStatus.CANCELLED:
+        raise InvalidVoucherError(
+            "Vouchers cannot be created directly in CANCELLED status; create as DRAFT or POSTED."
+        )
+    if len(payload.lines) < 2:
+        raise InvalidVoucherError("A double-entry voucher requires at least 2 lines.")
+
+    # Acquire write lock BEFORE reading FiscalYear.is_locked and Ledger.is_active (eliminates TOCTOU).
+    await begin_write_transaction(db)
     company = await _get_company(db, company_id)
+    await _acquire_company_write_lock(db, company.id)
 
     # PATCH(Q3): FY is the one CONTAINING voucher_date (not the latest FY).
     fy = await _fy_for_date(db, company.id, payload.voucher_date)
@@ -653,9 +740,6 @@ async def create_voucher(
             f"Voucher date {payload.voucher_date.isoformat()} is not inside any configured fiscal year."
         )
     _assert_period_open(fy, payload.voucher_date)
-
-    if len(payload.lines) < 2:
-        raise InvalidVoucherError("A double-entry voucher requires at least 2 lines.")
 
     requested_ids = {ln.ledger_id for ln in payload.lines if ln.ledger_id is not None}
     requested_codes = {
@@ -725,17 +809,26 @@ async def create_voucher(
             raise UnbalancedVoucherError(total_debit=total_dr, total_credit=total_cr)
 
     auto_prefix = _voucher_prefix(fy, payload.voucher_type)
-    manual_no = (payload.voucher_number or "").strip()
-    if manual_no and manual_no.upper().startswith(auto_prefix.upper()):
-        raise InvalidVoucherError(
-            f"'{manual_no}' is inside the reserved automatic series '{auto_prefix}####'; "
-            "omit voucher_number to auto-assign."
-        )
+    manual_no = (payload.voucher_number or "").strip().upper()
+    if manual_no:
+        if manual_no.startswith(auto_prefix.upper()):
+            raise InvalidVoucherError(
+                f"'{manual_no}' is inside the reserved automatic series '{auto_prefix}####'; "
+                "omit voucher_number to auto-assign."
+            )
+        if not _VOUCHER_NO_PATTERN.match(manual_no):
+            raise InvalidVoucherError(
+                f"Voucher number '{manual_no}' must be 1-{_GST_VOUCHER_NO_MAX_LEN} chars "
+                "(A-Z, 0-9, '-', '/') for CGST Rule 46(b) compliance."
+            )
 
-    await _acquire_company_write_lock(db, company.id)
     voucher_number = manual_no or await _next_voucher_number(
         db, company.id, fy, payload.voucher_type
     )
+    if len(voucher_number) > _GST_VOUCHER_NO_MAX_LEN:
+        raise InvalidVoucherError(
+            f"Generated voucher number '{voucher_number}' exceeds the 16-character CGST Rule 46(b) limit."
+        )
 
     target_status = payload.status.value
     voucher = Voucher(
@@ -785,6 +878,7 @@ async def cancel_voucher(
     - create_reversal=True: keeps original POSTED and posts a mirror JOURNAL numbered,
       locked-checked and dated in the REVERSAL's fiscal year.
     """
+    await begin_write_transaction(db)
     company = await _get_company(db, company_id)
     await _acquire_company_write_lock(db, company.id)
 
@@ -971,7 +1065,8 @@ async def get_ledger_statement(
     from_date: date | None = None,
     to_date: date | None = None,
 ) -> LedgerStatementRead:
-    company, default_fy = await get_active_company_and_fy(db, company_id, from_date)
+    anchor_date = from_date or to_date
+    company, default_fy = await get_active_company_and_fy(db, company_id, anchor_date)
     eff_from = from_date or default_fy.start_date
     eff_to = to_date or default_fy.end_date
     if eff_from > eff_to:
@@ -1090,7 +1185,8 @@ async def get_trial_balance(
     to_date: date | None = None,
     include_zero: bool = False,
 ) -> TrialBalanceReportRead:
-    company, default_fy = await get_active_company_and_fy(db, company_id, from_date)
+    anchor_date = from_date or to_date
+    company, default_fy = await get_active_company_and_fy(db, company_id, anchor_date)
     eff_from = from_date or default_fy.start_date
     eff_to = to_date or default_fy.end_date
     if eff_from > eff_to:
@@ -1164,13 +1260,27 @@ async def get_trial_balance(
         rows.append(row)
         _accumulate(row)
 
+    reserves_group = next(
+        (l.group for l in ledgers if l.group.name == "Reserves & Surplus"), None
+    )
+    re_group_id = reserves_group.id if reserves_group is not None else -1
+    re_group_name = reserves_group.name if reserves_group is not None else "Reserves & Surplus"
+
     if retained_signed != ZERO:
         r_dr, r_cr = _to_dr_cr_columns(retained_signed)
         row = TrialBalanceRow(
-            ledger_id=0, ledger_code=RETAINED_EARNINGS_CODE, ledger_name=RETAINED_EARNINGS_LABEL,
-            group_id=0, group_name="Reserves & Surplus", nature=AccountNature.EQUITY,
-            opening_debit=r_dr, opening_credit=r_cr, period_debit=ZERO, period_credit=ZERO,
-            closing_debit=r_dr, closing_credit=r_cr,
+            ledger_id=0,
+            ledger_code=RETAINED_EARNINGS_CODE,
+            ledger_name=RETAINED_EARNINGS_LABEL,
+            group_id=re_group_id,
+            group_name=re_group_name,
+            nature=AccountNature.EQUITY,
+            opening_debit=r_dr,
+            opening_credit=r_cr,
+            period_debit=ZERO,
+            period_credit=ZERO,
+            closing_debit=r_dr,
+            closing_credit=r_cr,
         )
         rows.append(row)
         _accumulate(row)
@@ -1199,7 +1309,8 @@ async def get_profit_loss(
     from_date: date | None = None,
     to_date: date | None = None,
 ) -> ProfitLossReportRead:
-    company, default_fy = await get_active_company_and_fy(db, company_id, from_date)
+    anchor_date = from_date or to_date
+    company, default_fy = await get_active_company_and_fy(db, company_id, anchor_date)
     eff_from = from_date or default_fy.start_date
     eff_to = to_date or default_fy.end_date
     if eff_from > eff_to:
@@ -1267,15 +1378,31 @@ async def get_balance_sheet(
     *,
     company_id: int | None = None,
     as_of_date: date | None = None,
+    from_date: date | None = None,
 ) -> BalanceSheetReportRead:
-    company, default_fy = await get_active_company_and_fy(db, company_id, as_of_date)
-    eff_as_of = as_of_date or default_fy.end_date
-    fy = await _fy_for_date(db, company.id, eff_as_of)
-    if fy is None:
-        raise ResourceNotFoundError(f"No fiscal year covers {eff_as_of.isoformat()}.")
+    company = await _get_company(db, company_id)
     books_start = await _books_beginning_date(db, company)
-    if eff_as_of < books_start:
+
+    if as_of_date is not None and as_of_date < books_start:
         raise InvalidVoucherError("as_of_date is before the books-beginning date.")
+
+    _, fy = await get_active_company_and_fy(db, company.id, as_of_date)
+    eff_as_of = as_of_date or fy.end_date
+    eff_from = from_date or fy.start_date
+    if eff_from > eff_as_of:
+        raise InvalidVoucherError("from_date must be on or before as_of_date.")
+
+    groups = list(
+        (
+            await db.execute(
+                select(AccountGroup).where(AccountGroup.company_id == company.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    groups_by_id = {g.id: g for g in groups}
+    reserves_group = next((g for g in groups if g.name == "Reserves & Surplus"), None)
 
     ledgers_stmt = (
         select(Ledger)
@@ -1287,25 +1414,42 @@ async def get_balance_sheet(
     ledgers = list((await db.execute(ledgers_stmt)).scalars().all())
 
     to_date_sums = await _fetch_posted_sums_by_ledger(db, company.id, to_date=eff_as_of)
+    # Partition nominal accounts around eff_from so current_period_net_profit ALWAYS
+    # ties out to get_profit_loss(from_date=eff_from, to_date=eff_as_of).net_profit.
     current_sums = await _fetch_posted_sums_by_ledger(
-        db, company.id, from_date=fy.start_date, to_date=eff_as_of
+        db, company.id, from_date=eff_from, to_date=eff_as_of
     )
-    prior_sums = await _fetch_posted_sums_by_ledger(db, company.id, before_date=fy.start_date)
+    prior_sums = await _fetch_posted_sums_by_ledger(
+        db, company.id, before_date=eff_from
+    )
 
     sections: dict[str, dict[int | str, BalanceSheetSectionGroup]] = {
-        AccountNature.ASSET.value: {}, AccountNature.LIABILITY.value: {}, AccountNature.EQUITY.value: {},
+        AccountNature.ASSET.value: {},
+        AccountNature.LIABILITY.value: {},
+        AccountNature.EQUITY.value: {},
     }
     totals = defaultdict(lambda: ZERO)
     current_np = ZERO
     retained_bf = ZERO
     opening_difference = ZERO
+    include_nom_op_in_current = eff_from <= books_start <= eff_as_of
+    include_nom_op_in_prior = books_start < eff_from
 
-    def _place(section: str, gkey: int | str, gname: str, item: StatementLineItem) -> None:
+    def _place(
+        section: str,
+        gkey: int | str,
+        gid: int,
+        gname: str,
+        item: StatementLineItem,
+    ) -> None:
         grp = sections[section].get(gkey)
         if grp is None:
             grp = BalanceSheetSectionGroup(
-                group_id=gkey if isinstance(gkey, int) else 0, group_name=gname,
-                nature=AccountNature(section), total=ZERO, ledgers=[],
+                group_id=gid,
+                group_name=gname,
+                nature=AccountNature(section),
+                total=ZERO,
+                ledgers=[],
             )
             sections[section][gkey] = grp
         grp.total += item.amount
@@ -1318,8 +1462,8 @@ async def get_balance_sheet(
         nature = _enum_value(ledger.group.nature)
 
         if nature in NOMINAL_NATURES:
-            cur = (op if fy.start_date <= books_start <= eff_as_of else ZERO) + _net(current_sums, ledger.id)
-            prior = _nominal_opening_prior(ledger, books_start, fy) + _net(prior_sums, ledger.id)
+            cur = (op if include_nom_op_in_current else ZERO) + _net(current_sums, ledger.id)
+            prior = (op if include_nom_op_in_prior else ZERO) + _net(prior_sums, ledger.id)
             current_np -= cur
             retained_bf -= prior
             continue
@@ -1331,26 +1475,56 @@ async def get_balance_sheet(
         section = nature if nature in sections else AccountNature.EQUITY.value
         amt = closing_signed if section == AccountNature.ASSET.value else -closing_signed
         gkey: int | str = ledger.group_id
+        gid = ledger.group_id
         gname = ledger.group.name
 
-        reclass_name = RECLASSIFY_OPPOSITE_BALANCE_GROUPS.get(ledger.group.name)
-        if reclass_name and amt < ZERO and section in (AccountNature.ASSET.value, AccountNature.LIABILITY.value):
+        reclass_name = _resolve_reclass_label(ledger.group_id, groups_by_id)
+        if (
+            reclass_name
+            and amt < ZERO
+            and section in (AccountNature.ASSET.value, AccountNature.LIABILITY.value)
+        ):
             section = (
-                AccountNature.LIABILITY.value if section == AccountNature.ASSET.value else AccountNature.ASSET.value
+                AccountNature.LIABILITY.value
+                if section == AccountNature.ASSET.value
+                else AccountNature.ASSET.value
             )
             amt = -amt
-            gkey, gname = f"reclass:{ledger.group_id}", reclass_name
+            gkey = f"reclass:{ledger.group_id}"
+            gid = -ledger.group_id  # Unique negative synthetic ID prevents key collisions
+            gname = reclass_name
 
-        _place(section, gkey, gname, StatementLineItem(
-            ledger_id=ledger.id, ledger_code=ledger.code, ledger_name=ledger.name,
-            group_name=gname, amount=amt,
-        ))
+        _place(
+            section,
+            gkey,
+            gid,
+            gname,
+            StatementLineItem(
+                ledger_id=ledger.id,
+                ledger_code=ledger.code,
+                ledger_name=ledger.name,
+                group_name=gname,
+                amount=amt,
+            ),
+        )
 
     if retained_bf != ZERO:
-        _place(AccountNature.EQUITY.value, "retained", "Reserves & Surplus", StatementLineItem(
-            ledger_id=0, ledger_code=RETAINED_EARNINGS_CODE, ledger_name=RETAINED_EARNINGS_LABEL,
-            group_name="Reserves & Surplus", amount=retained_bf,
-        ))
+        re_gkey: int | str = reserves_group.id if reserves_group is not None else "retained"
+        re_gid = reserves_group.id if reserves_group is not None else -100_000
+        re_gname = reserves_group.name if reserves_group is not None else "Reserves & Surplus"
+        _place(
+            AccountNature.EQUITY.value,
+            re_gkey,
+            re_gid,
+            re_gname,
+            StatementLineItem(
+                ledger_id=0,
+                ledger_code=RETAINED_EARNINGS_CODE,
+                ledger_name=RETAINED_EARNINGS_LABEL,
+                group_name=re_gname,
+                amount=retained_bf,
+            ),
+        )
 
     total_assets = totals[AccountNature.ASSET.value]
     total_liabilities = totals[AccountNature.LIABILITY.value]
